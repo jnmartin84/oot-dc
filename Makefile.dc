@@ -1,0 +1,486 @@
+# Makefile.dc - Dreamcast build using KallistiOS
+
+include $(KOS_BASE)/Makefile.rules
+
+CC := kos-cc
+CFLAGS := -Os -flto -Wall -std=gnu23 -DLINUX -D_LANGUAGE_C -DOOT_VERSION=GC_EU_MQ_DBG \
+    -DPLATFORM_GC=1 -DPLATFORM_N64=0 -DPLATFORM_IQUE=0 \
+    -DOOT_REVISION=15 -DOOT_REGION=REGION_EU \
+    -DLIBULTRA_VERSION=LIBULTRA_VERSION_L -DLIBULTRA_PATCH=0 \
+    -DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG \
+    -DDEBUG_FEATURES=1 -DNON_MATCHING -DAVOID_UB -DMML_VERSION=MML_VERSION_OOT \
+    -DBUILD_CREATOR='"zelda@srd022j"' -DBUILD_DATE='"03-02-21"' \
+    -DBUILD_TIME='"00:16:31"' \
+    -DREGION_JP=0 -DREGION_US=1 -DREGION_EU=2 -DREGION_NULL=255 \
+    -Wno-incompatible-pointer-types -Wno-int-conversion \
+    -g1 -fno-toplevel-reorder -fwrapv -Wstrict-overflow=3 \
+    -Iinclude -Iinclude/dcaudio -Isrc -I. -Iextracted/gc-eu-mq-dbg -Ibuild/gc-eu-mq-dbg
+
+#    -DRENDER_240P=1 
+
+
+BUILD_DIR := build_dc
+ASSET_DIR := build_dc/assets
+TARGET := zelda.elf
+LIBS := -lm -lsh4zam
+
+OVERLAY_SRCS := $(filter-out %.inc.c %/z_map_mark_data.c %/z_lmap_mark_data.c,$(wildcard src/overlays/*/*/*.c))
+OVERLAY_OBJECTS := $(patsubst src/%.c,$(BUILD_DIR)/src/%.o,$(OVERLAY_SRCS))
+
+ASSET_ELFS := $(wildcard $(ASSET_DIR)/*.elf)
+ASSET_SYMBOLS := $(foreach elf,$(ASSET_ELFS),-Wl,--just-symbols=$(elf))
+
+OBJECTS := \
+    $(BUILD_DIR)/src/audio/game/data.o \
+    $(BUILD_DIR)/src/audio/game/general.o \
+    $(BUILD_DIR)/src/audio/game/sequence.o \
+    $(BUILD_DIR)/src/audio/game/session_config.o \
+    $(BUILD_DIR)/src/audio/game/session_init.o \
+    $(BUILD_DIR)/src/audio/game/sfx.o \
+    $(BUILD_DIR)/src/audio/game/sfx_params.o \
+    $(BUILD_DIR)/src/audio/internal/data.o \
+    $(BUILD_DIR)/src/audio/internal/effects.o \
+    $(BUILD_DIR)/src/audio/internal/heap.o \
+    $(BUILD_DIR)/src/audio/internal/load.o \
+    $(BUILD_DIR)/src/audio/internal/os.o \
+    $(BUILD_DIR)/src/audio/internal/playback.o \
+    $(BUILD_DIR)/src/audio/internal/seqplayer.o \
+    $(BUILD_DIR)/src/audio/internal/mixer.o \
+    $(BUILD_DIR)/src/audio/internal/synthesis.o \
+    $(BUILD_DIR)/src/audio/internal/thread.o \
+    $(BUILD_DIR)/src/audio/internal/aica_synth.o \
+    $(BUILD_DIR)/src/audio/internal/aica_sample_table.o \
+    $(BUILD_DIR)/src/audio/tables/samplebank_table.o \
+    $(BUILD_DIR)/src/audio/tables/sequence_table.o \
+    $(BUILD_DIR)/src/audio/tables/soundfont_table.o \
+    $(BUILD_DIR)/src/buffers/audio_heap.o \
+    $(BUILD_DIR)/src/buffers/gfxbuffers.o \
+    $(BUILD_DIR)/src/buffers/zbuffer.o \
+    $(BUILD_DIR)/src/code/PreRender.o \
+    $(BUILD_DIR)/src/code/TwoHeadArena.o \
+    $(BUILD_DIR)/src/code/TwoHeadGfxArena.o \
+    $(BUILD_DIR)/src/code/audio_stop_all_sfx.o \
+    $(BUILD_DIR)/src/code/audio_thread_manager.o \
+    $(BUILD_DIR)/src/code/db_camera.o \
+    $(BUILD_DIR)/src/code/debug_malloc.o \
+    $(BUILD_DIR)/src/code/fault_gc.o \
+    $(BUILD_DIR)/src/code/fault_gc_drawer.o \
+    $(BUILD_DIR)/src/code/flg_set.o \
+    $(BUILD_DIR)/src/code/game.o \
+    $(BUILD_DIR)/src/code/gamealloc.o \
+    $(BUILD_DIR)/src/code/gfxalloc.o \
+    $(BUILD_DIR)/src/code/graph.o \
+    $(BUILD_DIR)/src/code/irqmgr.o \
+    $(BUILD_DIR)/src/code/jpegdecoder.o \
+    $(BUILD_DIR)/src/code/jpegutils.o \
+    $(BUILD_DIR)/src/code/listalloc.o \
+    $(BUILD_DIR)/src/code/main.o \
+    $(BUILD_DIR)/src/code/mempak.o \
+    $(BUILD_DIR)/src/code/object_table.o \
+    $(BUILD_DIR)/src/code/padmgr.o \
+    $(BUILD_DIR)/src/code/sched.o \
+    $(BUILD_DIR)/src/code/shrink_window.o \
+    $(BUILD_DIR)/src/code/speed_meter.o \
+    $(BUILD_DIR)/src/code/sys_cfb.o \
+    $(BUILD_DIR)/src/code/sys_debug_controller.o \
+    $(BUILD_DIR)/src/code/sys_freeze.o \
+    $(BUILD_DIR)/src/code/sys_math.o \
+    $(BUILD_DIR)/src/code/sys_math3d.o \
+    $(BUILD_DIR)/src/code/sys_math3d_draw.o \
+    $(BUILD_DIR)/src/code/sys_math_atan.o \
+    $(BUILD_DIR)/src/code/sys_matrix.o \
+    $(BUILD_DIR)/src/code/sys_rumble.o \
+    $(BUILD_DIR)/src/code/sys_ucode.o \
+    $(BUILD_DIR)/src/code/title_setup.o \
+    $(BUILD_DIR)/src/code/ucode_disas.o \
+    $(BUILD_DIR)/src/code/z_DLF.o \
+    $(BUILD_DIR)/src/code/z_actor.o \
+    $(BUILD_DIR)/src/code/z_actor_dlftbls.o \
+    $(BUILD_DIR)/src/code/z_bg_collect.o \
+    $(BUILD_DIR)/src/code/z_bg_item.o \
+    $(BUILD_DIR)/src/code/z_bgcheck.o \
+    $(BUILD_DIR)/src/code/z_camera.o \
+    $(BUILD_DIR)/src/code/z_collision_btltbls.o \
+    $(BUILD_DIR)/src/code/z_collision_check.o \
+    $(BUILD_DIR)/src/code/z_common_data.o \
+    $(BUILD_DIR)/src/code/z_construct.o \
+    $(BUILD_DIR)/src/code/z_cutscene_spline.o \
+    $(BUILD_DIR)/src/code/z_debug.o \
+    $(BUILD_DIR)/src/code/z_debug_display.o \
+    $(BUILD_DIR)/src/code/z_draw.o \
+    $(BUILD_DIR)/src/code/z_eff_blure.o \
+    $(BUILD_DIR)/src/code/z_eff_shield_particle.o \
+    $(BUILD_DIR)/src/code/z_eff_spark.o \
+    $(BUILD_DIR)/src/code/z_eff_ss_dead.o \
+    $(BUILD_DIR)/src/code/z_effect.o \
+    $(BUILD_DIR)/src/code/z_effect_soft_sprite.o \
+    $(BUILD_DIR)/src/code/z_effect_soft_sprite_dlftbls.o \
+    $(BUILD_DIR)/src/code/z_effect_soft_sprite_old_init.o \
+    $(BUILD_DIR)/src/code/z_elf_message.o \
+    $(BUILD_DIR)/src/code/z_en_a_keep.o \
+    $(BUILD_DIR)/src/code/z_en_item00.o \
+    $(BUILD_DIR)/src/code/z_env_flags.o \
+    $(BUILD_DIR)/src/code/z_face_reaction.o \
+    $(BUILD_DIR)/src/code/z_fbdemo.o \
+    $(BUILD_DIR)/src/code/z_fbdemo_circle.o \
+    $(BUILD_DIR)/src/code/z_fbdemo_fade.o \
+    $(BUILD_DIR)/src/code/z_fbdemo_triforce.o \
+    $(BUILD_DIR)/src/code/z_fbdemo_wipe1.o \
+    $(BUILD_DIR)/src/code/z_fcurve_data.o \
+    $(BUILD_DIR)/src/code/z_fcurve_data_skelanime.o \
+    $(BUILD_DIR)/src/code/z_frame_advance.o \
+    $(BUILD_DIR)/src/code/z_game_dlftbls.o \
+    $(BUILD_DIR)/src/code/z_game_over.o \
+    $(BUILD_DIR)/src/code/z_horse.o \
+    $(BUILD_DIR)/src/code/z_inventory.o \
+    $(BUILD_DIR)/src/code/z_jpeg.o \
+    $(BUILD_DIR)/src/code/z_kaleido_manager.o \
+    $(BUILD_DIR)/src/code/z_kaleido_scope_call.o \
+    $(BUILD_DIR)/src/code/z_kaleido_setup.o \
+    $(BUILD_DIR)/src/code/z_kanfont.o \
+    $(BUILD_DIR)/src/code/z_kankyo.o \
+    $(BUILD_DIR)/src/code/z_lib.o \
+    $(BUILD_DIR)/src/code/z_lifemeter.o \
+    $(BUILD_DIR)/src/code/z_lights.o \
+    $(BUILD_DIR)/src/code/z_malloc.o \
+    $(BUILD_DIR)/src/code/z_map_data.o \
+    $(BUILD_DIR)/src/code/z_map_exp.o \
+    $(BUILD_DIR)/src/code/z_map_mark.o \
+    $(BUILD_DIR)/src/code/z_memory_utils.o \
+    $(BUILD_DIR)/src/code/z_message.o \
+    $(BUILD_DIR)/src/code/z_moji.o \
+    $(BUILD_DIR)/src/code/z_nulltask.o \
+    $(BUILD_DIR)/src/code/z_olib.o \
+    $(BUILD_DIR)/src/code/z_onepointdemo.o \
+    $(BUILD_DIR)/src/code/z_parameter.o \
+    $(BUILD_DIR)/src/code/z_path.o \
+    $(BUILD_DIR)/src/code/z_play.o \
+    $(BUILD_DIR)/src/code/z_player_call.o \
+    $(BUILD_DIR)/src/code/z_player_lib.o \
+    $(BUILD_DIR)/src/code/z_prenmi.o \
+    $(BUILD_DIR)/src/code/z_prenmi_buff.o \
+    $(BUILD_DIR)/src/code/z_quake.o \
+    $(BUILD_DIR)/src/code/z_rcp.o \
+    $(BUILD_DIR)/src/code/z_room.o \
+    $(BUILD_DIR)/src/code/z_rumble.o \
+    $(BUILD_DIR)/src/code/z_sample.o \
+    $(BUILD_DIR)/src/code/z_scene.o \
+    $(BUILD_DIR)/src/code/z_scene_table.o \
+    $(BUILD_DIR)/src/code/z_sfx_source.o \
+    $(BUILD_DIR)/src/code/z_skelanime.o \
+    $(BUILD_DIR)/src/code/z_skin.o \
+    $(BUILD_DIR)/src/code/z_skin_awb.o \
+    $(BUILD_DIR)/src/code/z_skin_matrix.o \
+    $(BUILD_DIR)/src/code/z_sram.o \
+    $(BUILD_DIR)/src/code/z_ss_sram.o \
+    $(BUILD_DIR)/src/code/z_view.o \
+    $(BUILD_DIR)/src/code/z_vimode.o \
+    $(BUILD_DIR)/src/code/z_viscvg.o \
+    $(BUILD_DIR)/src/code/z_vismono.o \
+    $(BUILD_DIR)/src/code/z_viszbuf.o \
+    $(BUILD_DIR)/src/code/z_vr_box.o \
+    $(BUILD_DIR)/src/code/z_vr_box_draw.o \
+    $(BUILD_DIR)/src/code/z_demo.o \
+    $(BUILD_DIR)/src/dmadata/dmadata.o \
+    $(BUILD_DIR)/src/elf_message/elf_message_field.o \
+    $(BUILD_DIR)/src/elf_message/elf_message_ydan.o \
+    $(BUILD_DIR)/src/libc64/__osMalloc_gc.o \
+    $(BUILD_DIR)/src/libc64/aprintf.o \
+    $(BUILD_DIR)/src/libc64/malloc.o \
+    $(BUILD_DIR)/src/libc64/math64.o \
+    $(BUILD_DIR)/src/libc64/qrand.o \
+    $(BUILD_DIR)/src/libc64/sleep.o \
+    $(BUILD_DIR)/src/libu64/debug.o \
+    $(BUILD_DIR)/src/libu64/gfxprint.o \
+    $(BUILD_DIR)/src/libu64/load_gc.o \
+    $(BUILD_DIR)/src/libu64/loadfragment2_gc.o \
+    $(BUILD_DIR)/src/libu64/logseverity_gc.o \
+    $(BUILD_DIR)/src/libu64/mtxuty-cvt.o \
+    $(BUILD_DIR)/src/libu64/pad.o \
+    $(BUILD_DIR)/src/libu64/padsetup.o \
+    $(BUILD_DIR)/src/libu64/rcp_utils.o \
+    $(BUILD_DIR)/src/libu64/relocation_gc.o \
+    $(BUILD_DIR)/src/libu64/runtime.o \
+    $(BUILD_DIR)/src/libu64/stackcheck.o \
+    $(BUILD_DIR)/src/libultra/audio/auxbus.o \
+    $(BUILD_DIR)/src/libultra/audio/copy.o \
+    $(BUILD_DIR)/src/libultra/audio/drvrnew.o \
+    $(BUILD_DIR)/src/libultra/audio/env.o \
+    $(BUILD_DIR)/src/libultra/audio/filter.o \
+    $(BUILD_DIR)/src/libultra/audio/heapalloc.o \
+    $(BUILD_DIR)/src/libultra/audio/load.o \
+    $(BUILD_DIR)/src/libultra/audio/mainbus.o \
+    $(BUILD_DIR)/src/libultra/audio/resample.o \
+    $(BUILD_DIR)/src/libultra/audio/reverb.o \
+    $(BUILD_DIR)/src/libultra/audio/save.o \
+    $(BUILD_DIR)/src/libultra/audio/sl.o \
+    $(BUILD_DIR)/src/libultra/audio/synallocfx.o \
+    $(BUILD_DIR)/src/libultra/audio/syndelete.o \
+    $(BUILD_DIR)/src/libultra/audio/synthesizer.o \
+    $(BUILD_DIR)/src/libultra/gu/lookat.o \
+    $(BUILD_DIR)/src/libultra/gu/lookathil.o \
+    $(BUILD_DIR)/src/libultra/gu/mtxutil.o \
+    $(BUILD_DIR)/src/libultra/gu/normalize.o \
+    $(BUILD_DIR)/src/libultra/gu/ortho.o \
+    $(BUILD_DIR)/src/libultra/gu/perspective.o \
+    $(BUILD_DIR)/src/libultra/gu/position.o \
+    $(BUILD_DIR)/src/libultra/gu/rotate.o \
+    $(BUILD_DIR)/src/libultra/gu/scale.o \
+    $(BUILD_DIR)/src/libultra/gu/translate.o \
+    $(BUILD_DIR)/src/libultra/gu/us2dex.o \
+    $(BUILD_DIR)/src/libultra/io/aigetlen.o \
+    $(BUILD_DIR)/src/libultra/io/aisetfreq.o \
+    $(BUILD_DIR)/src/libultra/io/cartrominit.o \
+    $(BUILD_DIR)/src/libultra/io/contpfs.o \
+    $(BUILD_DIR)/src/libultra/io/contquery.o \
+    $(BUILD_DIR)/src/libultra/io/contramread.o \
+    $(BUILD_DIR)/src/libultra/io/contramwrite.o \
+    $(BUILD_DIR)/src/libultra/io/contreaddata.o \
+    $(BUILD_DIR)/src/libultra/io/controller.o \
+    $(BUILD_DIR)/src/libultra/io/contsetch.o \
+    $(BUILD_DIR)/src/libultra/io/crc.o \
+    $(BUILD_DIR)/src/libultra/io/devmgr.o \
+    $(BUILD_DIR)/src/libultra/io/dpgetstat.o \
+    $(BUILD_DIR)/src/libultra/io/dpsetstat.o \
+    $(BUILD_DIR)/src/libultra/io/epidma.o \
+    $(BUILD_DIR)/src/libultra/io/epirawdma.o \
+    $(BUILD_DIR)/src/libultra/io/epirawread.o \
+    $(BUILD_DIR)/src/libultra/io/epirawwrite.o \
+    $(BUILD_DIR)/src/libultra/io/epiread.o \
+    $(BUILD_DIR)/src/libultra/io/epiwrite.o \
+    $(BUILD_DIR)/src/libultra/io/motor.o \
+    $(BUILD_DIR)/src/libultra/io/pfsallocatefile.o \
+    $(BUILD_DIR)/src/libultra/io/pfschecker.o \
+    $(BUILD_DIR)/src/libultra/io/pfsdeletefile.o \
+    $(BUILD_DIR)/src/libultra/io/pfsfilestate.o \
+    $(BUILD_DIR)/src/libultra/io/pfsfindfile.o \
+    $(BUILD_DIR)/src/libultra/io/pfsfreeblocks.o \
+    $(BUILD_DIR)/src/libultra/io/pfsgetstatus.o \
+    $(BUILD_DIR)/src/libultra/io/pfsinitpak.o \
+    $(BUILD_DIR)/src/libultra/io/pfsisplug.o \
+    $(BUILD_DIR)/src/libultra/io/pfsreadwritefile.o \
+    $(BUILD_DIR)/src/libultra/io/pfsselectbank.o \
+    $(BUILD_DIR)/src/libultra/io/piacs.o \
+    $(BUILD_DIR)/src/libultra/io/pigetcmdq.o \
+    $(BUILD_DIR)/src/libultra/io/pimgr.o \
+    $(BUILD_DIR)/src/libultra/io/pirawdma.o \
+    $(BUILD_DIR)/src/libultra/io/si.o \
+    $(BUILD_DIR)/src/libultra/io/siacs.o \
+    $(BUILD_DIR)/src/libultra/io/sirawdma.o \
+    $(BUILD_DIR)/src/libultra/io/sirawread.o \
+    $(BUILD_DIR)/src/libultra/io/sirawwrite.o \
+    $(BUILD_DIR)/src/libultra/io/sp.o \
+    $(BUILD_DIR)/src/libultra/io/spgetstat.o \
+    $(BUILD_DIR)/src/libultra/io/sprawdma.o \
+    $(BUILD_DIR)/src/libultra/io/spsetpc.o \
+    $(BUILD_DIR)/src/libultra/io/spsetstat.o \
+    $(BUILD_DIR)/src/libultra/io/sptask.o \
+    $(BUILD_DIR)/src/libultra/io/sptaskyield.o \
+    $(BUILD_DIR)/src/libultra/io/sptaskyielded.o \
+    $(BUILD_DIR)/src/libultra/io/vi.o \
+    $(BUILD_DIR)/src/libultra/io/viblack.o \
+    $(BUILD_DIR)/src/libultra/io/viextendvstart.o \
+    $(BUILD_DIR)/src/libultra/io/vigetcurrcontext.o \
+    $(BUILD_DIR)/src/libultra/io/vigetcurrframebuf.o \
+    $(BUILD_DIR)/src/libultra/io/vigetnextframebuf.o \
+    $(BUILD_DIR)/src/libultra/io/vimgr.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpalhaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpalhan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpalhpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpalhpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpalhpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpalhpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallaf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallan2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodefpallpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempalhaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempalhan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempalhpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempalhpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempalhpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempalhpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallaf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallan2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodempallpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentschaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentschan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentschpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentschpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentschpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentschpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclaf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclan2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodentsclpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepalhaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepalhan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepalhpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepalhpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepalhpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepalhpn2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallaf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallaf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallan1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallan2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallpf1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallpf2.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallpn1.o \
+    $(BUILD_DIR)/src/libultra/io/vimodepallpn2.o \
+    $(BUILD_DIR)/src/libultra/io/visetevent.o \
+    $(BUILD_DIR)/src/libultra/io/visetmode.o \
+    $(BUILD_DIR)/src/libultra/io/visetspecial.o \
+    $(BUILD_DIR)/src/libultra/io/visetxscale.o \
+    $(BUILD_DIR)/src/libultra/io/visetyscale.o \
+    $(BUILD_DIR)/src/libultra/io/viswapbuf.o \
+    $(BUILD_DIR)/src/libultra/io/viswapcontext.o \
+    $(BUILD_DIR)/src/libultra/io/vitbl.o \
+    $(BUILD_DIR)/src/libultra/libc/ldiv.o \
+    $(BUILD_DIR)/src/libultra/libc/ll.o \
+    $(BUILD_DIR)/src/libultra/libc/llcvt.o \
+    $(BUILD_DIR)/src/libultra/libc/xldtob.o \
+    $(BUILD_DIR)/src/libultra/libc/xlitob.o \
+    $(BUILD_DIR)/src/libultra/libc/xprintf.o \
+    $(BUILD_DIR)/src/libultra/os/afterprenmi.o \
+    $(BUILD_DIR)/src/libultra/os/createmesgqueue.o \
+    $(BUILD_DIR)/src/libultra/os/createthread.o \
+    $(BUILD_DIR)/src/libultra/os/destroythread.o \
+    $(BUILD_DIR)/src/libultra/os/getactivequeue.o \
+    $(BUILD_DIR)/src/libultra/os/getcurrfaultedthread.o \
+    $(BUILD_DIR)/src/libultra/os/gethwintrroutine.o \
+    $(BUILD_DIR)/src/libultra/os/getmemsize.o \
+    $(BUILD_DIR)/src/libultra/os/getthreadid.o \
+    $(BUILD_DIR)/src/libultra/os/getthreadpri.o \
+    $(BUILD_DIR)/src/libultra/os/gettime.o \
+    $(BUILD_DIR)/src/libultra/os/initialize.o \
+    $(BUILD_DIR)/src/libultra/os/jammesg.o \
+    $(BUILD_DIR)/src/libultra/os/kdebugserver.o \
+    $(BUILD_DIR)/src/libultra/os/recvmesg.o \
+    $(BUILD_DIR)/src/libultra/os/resetglobalintmask.o \
+    $(BUILD_DIR)/src/libultra/os/sendmesg.o \
+    $(BUILD_DIR)/src/libultra/os/seteventmesg.o \
+    $(BUILD_DIR)/src/libultra/os/setglobalintmask.o \
+    $(BUILD_DIR)/src/libultra/os/sethwintrroutine.o \
+    $(BUILD_DIR)/src/libultra/os/setthreadpri.o \
+    $(BUILD_DIR)/src/libultra/os/settime.o \
+    $(BUILD_DIR)/src/libultra/os/settimer.o \
+    $(BUILD_DIR)/src/libultra/os/startthread.o \
+    $(BUILD_DIR)/src/libultra/os/stopthread.o \
+    $(BUILD_DIR)/src/libultra/os/stoptimer.o \
+    $(BUILD_DIR)/src/libultra/os/thread.o \
+    $(BUILD_DIR)/src/libultra/os/timerintr.o \
+    $(BUILD_DIR)/src/libultra/os/virtualtophysical.o \
+    $(BUILD_DIR)/src/libultra/os/yieldthread.o \
+    $(BUILD_DIR)/src/libultra/reg/_getcount.o \
+    $(BUILD_DIR)/src/libultra/reg/_setcompare.o \
+    $(BUILD_DIR)/src/linux/reimpl.o \
+    $(BUILD_DIR)/src/dreamcast/dc_audio.o \
+    $(BUILD_DIR)/src/dreamcast/main.o
+
+ALL_OBJECTS := $(OBJECTS) $(OVERLAY_OBJECTS)
+
+all: $(TARGET)
+
+assets:
+	python3 pc_tools/dc_assets.py
+
+# AICA voice driver: regenerate the ADPCM pool (assets_dc/adpcm_pool.bin, loaded
+# at runtime) + sample table from the soundfont banks (timestamp-gated; only
+# re-runs when the banks change). scipy-optional -- builds with stock python3.
+PYTHON ?= python3
+AICA_TOOLS := $(wildcard tools/aica/*.py) tools/aica/audio_tables.json
+
+src/audio/internal/aica_sample_table.c: assets_dc/Audiobank.bin assets_dc/Audiotable.bin $(AICA_TOOLS)
+	PYTHONPATH=tools/aica $(PYTHON) tools/aica/emit_table.py \
+		--audiobank assets_dc/Audiobank.bin --audiotable assets_dc/Audiotable.bin \
+		--tables tools/aica/audio_tables.json \
+		--outdir src/audio/internal --incdir src/audio/internal --pool assets_dc/adpcm_pool.bin
+
+# emitted together with aica_sample_table.c by the one recipe above
+src/audio/internal/aica_sample_table.h assets_dc/adpcm_pool.bin: src/audio/internal/aica_sample_table.c
+	@touch $@
+
+# aica_synth.c #includes the generated header
+$(BUILD_DIR)/src/audio/internal/aica_synth.o: src/audio/internal/aica_sample_table.h
+
+# Force linker to keep audio table entries (--gc-sections would drop them as "unreferenced")
+KEEP_AUDIO := -Wl,--undefined=_sSequenceTableEntries \
+              -Wl,--undefined=_sSoundFontTableEntries \
+              -Wl,--undefined=_sSampleBankTableEntries
+
+$(TARGET): $(ALL_OBJECTS) assets_dc/adpcm_pool.bin | check-assets
+	kos-cc $(ALL_OBJECTS) -o $(TARGET) $(ASSET_SYMBOLS) $(KEEP_AUDIO) $(LIBS)
+
+
+check-assets:
+	@if [ -z "$(ASSET_ELFS)" ]; then \
+		echo "Error: No asset ELFs found. Run 'make assets' first."; \
+		exit 1; \
+	fi
+	@if [ ! -f "$(ASSET_DIR)/segments.elf" ]; then \
+		echo "Error: segments.elf not found. Run 'make assets' first."; \
+		exit 1; \
+	fi
+
+# Core game code + DC renderer - O3 for speed
+$(BUILD_DIR)/src/code/%.o: src/code/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -Os -c $< -o $@
+
+$(BUILD_DIR)/src/dreamcast/%.o: src/dreamcast/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+# GCC ICE with -Os -flto (gen_reg_rtx, emit-rtl.cc:1177)
+$(BUILD_DIR)/src/overlays/actors/ovl_En_Ganon_Mant/z_en_ganon_mant.o: src/overlays/actors/ovl_En_Ganon_Mant/z_en_ganon_mant.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+$(BUILD_DIR)/src/overlays/actors/ovl_En_Am/z_en_am.o: src/overlays/actors/ovl_En_Am/z_en_am.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+$(BUILD_DIR)/src/overlays/actors/ovl_En_Bird/z_en_bird.o: src/overlays/actors/ovl_En_Bird/z_en_bird.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+# Audio code - O3 for performance 
+$(BUILD_DIR)/src/audio/game/%.o: src/audio/game/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+$(BUILD_DIR)/src/audio/internal/%.o: src/audio/internal/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+# Audio table files must be compiled without LTO to prevent GC of entries arrays
+$(BUILD_DIR)/src/audio/tables/%.o: src/audio/tables/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -fno-lto -c $< -o $@
+
+$(BUILD_DIR)/src/%.o: src/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@
+
+clean:
+	rm -rf $(BUILD_DIR)/src $(TARGET) 
+
+clean-assets:
+	rm -rf $(ASSET_DIR) assets_dc
+
+clean-all: clean clean-assets
+
+.PHONY: all clean clean-assets clean-all assets check-assets
