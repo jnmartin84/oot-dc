@@ -18,7 +18,7 @@
 #define acosf shz_acosf
 #define asinf shz_asinf
 #define tanf shz_tanf
-#define memcpy shz_memcpy
+//#define memcpy shz_memcpy
 
 #define ASSERT(cond, msg, file, line)                                          \
     do {                                                                       \

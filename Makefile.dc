@@ -3,6 +3,12 @@
 include $(KOS_BASE)/Makefile.rules
 
 CC := kos-cc
+# LTO knob. The sourced KOS env injects -flto=auto through kos-cc (placed BEFORE our
+# args), so LTO=0 appends a trailing -fno-lto (GCC: last flag wins) to compile AND
+# link. Default 1 = the normal LTO build. `make -f Makefile.dc LTO=0` to bisect.
+LTO ?= 1
+LTO_FLAGS := $(if $(filter 0,$(LTO)),-fno-lto,)
+
 CFLAGS := -Os -flto -Wall -std=gnu23 -DLINUX -D_LANGUAGE_C -DOOT_VERSION=GC_EU_MQ_DBG \
     -DPLATFORM_GC=1 -DPLATFORM_N64=0 -DPLATFORM_IQUE=0 \
     -DOOT_REVISION=15 -DOOT_REGION=REGION_EU \
@@ -15,6 +21,7 @@ CFLAGS := -Os -flto -Wall -std=gnu23 -DLINUX -D_LANGUAGE_C -DOOT_VERSION=GC_EU_M
     -Wno-incompatible-pointer-types -Wno-int-conversion \
     -g1 -fno-toplevel-reorder -fwrapv -Wstrict-overflow=3 \
     -Iinclude -Iinclude/dcaudio -Isrc -I. -Iextracted/gc-eu-mq-dbg -Ibuild/gc-eu-mq-dbg
+CFLAGS += $(LTO_FLAGS)
 
 #    -DRENDER_240P=1 
 
@@ -45,7 +52,6 @@ OBJECTS := \
     $(BUILD_DIR)/src/audio/internal/os.o \
     $(BUILD_DIR)/src/audio/internal/playback.o \
     $(BUILD_DIR)/src/audio/internal/seqplayer.o \
-    $(BUILD_DIR)/src/audio/internal/mixer.o \
     $(BUILD_DIR)/src/audio/internal/synthesis.o \
     $(BUILD_DIR)/src/audio/internal/thread.o \
     $(BUILD_DIR)/src/audio/internal/aica_synth.o \
@@ -399,12 +405,18 @@ assets:
 
 # AICA voice driver: regenerate the ADPCM pool (assets_dc/adpcm_pool.bin, loaded
 # at runtime) + sample table from the soundfont banks (timestamp-gated; only
-# re-runs when the banks change). scipy-optional -- builds with stock python3.
-PYTHON ?= python3
+# re-runs when the banks change).
+# Use the project venv (matches the main Makefile's PYTHON := $(VENV)/bin/python3).
+# The AICA transcoder REQUIRES scipy/numpy from requirements.txt; system python
+# silently produces broken sampled audio. Override with `make PYTHON=... ` if needed.
+PYTHON ?= .venv/bin/python3
+# Bake the software reverb into the sample pool. The "known good" shipping table was
+# built with this ON; default 1 reproduces it. `make AICA_REVERB=0` for dry samples.
+AICA_REVERB ?= 1
 AICA_TOOLS := $(wildcard tools/aica/*.py) tools/aica/audio_tables.json
 
 src/audio/internal/aica_sample_table.c: assets_dc/Audiobank.bin assets_dc/Audiotable.bin $(AICA_TOOLS)
-	PYTHONPATH=tools/aica $(PYTHON) tools/aica/emit_table.py \
+	AICA_REVERB=$(AICA_REVERB) PYTHONPATH=tools/aica $(PYTHON) tools/aica/emit_table.py \
 		--audiobank assets_dc/Audiobank.bin --audiotable assets_dc/Audiotable.bin \
 		--tables tools/aica/audio_tables.json \
 		--outdir src/audio/internal --incdir src/audio/internal --pool assets_dc/adpcm_pool.bin
@@ -422,7 +434,7 @@ KEEP_AUDIO := -Wl,--undefined=_sSequenceTableEntries \
               -Wl,--undefined=_sSampleBankTableEntries
 
 $(TARGET): $(ALL_OBJECTS) assets_dc/adpcm_pool.bin | check-assets
-	kos-cc $(ALL_OBJECTS) -o $(TARGET) $(ASSET_SYMBOLS) $(KEEP_AUDIO) $(LIBS)
+	kos-cc $(ALL_OBJECTS) -o $(TARGET) $(ASSET_SYMBOLS) $(KEEP_AUDIO) $(LIBS) $(LTO_FLAGS)
 
 
 check-assets:
@@ -456,6 +468,16 @@ $(BUILD_DIR)/src/overlays/actors/ovl_En_Am/z_en_am.o: src/overlays/actors/ovl_En
 $(BUILD_DIR)/src/overlays/actors/ovl_En_Bird/z_en_bird.o: src/overlays/actors/ovl_En_Bird/z_en_bird.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -O2 -c $< -o $@
+
+# GCC 14.3 LTO ICEs at LINK time in the libultra libc long-double printf support
+# (xprintf.c: expand_ifn_va_arg_1 tree-stdarg.cc:1037; xldtob.c:
+# emit_library_call_value_1 calls.cc:4305) once they land in an ltrans partition;
+# partition-dependent, so they appear/disappear with unrelated edits. Nothing here
+# is hot -- keep the whole dir out of LTO (trailing -fno-lto wins over kos-cc's
+# -flto=auto).
+$(BUILD_DIR)/src/libultra/libc/%.o: src/libultra/libc/%.c
+	@mkdir -p $(dir $@)
+	$(CC) $(CFLAGS) -c $< -o $@ -fno-lto
 
 # Audio code - O3 for performance 
 $(BUILD_DIR)/src/audio/game/%.o: src/audio/game/%.c

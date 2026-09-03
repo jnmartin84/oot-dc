@@ -851,6 +851,10 @@ AnimTask* AnimTaskQueue_NewTask(AnimTaskQueue* animTaskQueue, s32 type) {
     s16 taskNumber = animTaskQueue->count;
 
     if (taskNumber >= ANIM_TASK_QUEUE_MAX) {
+        /* DC diag: this drop is otherwise silent; a dropped COPY_USING_MAP leaves
+           Link's upper body on the base frame's pose for the frame. */
+        { static u32 sDropLogged; if (sDropLogged < 64) { sDropLogged++;
+            PRINTF("ANIMQ_DROP: type=%d count=%d\n", (int)type, (int)taskNumber); } }
         return NULL;
     }
 

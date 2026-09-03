@@ -14,7 +14,7 @@
  */
 void* MemCpy(void* dest, const void* src, s32 len) {
 #if __DREAMCAST__
-    return shz_memcpy(dest, src, len);
+    return memcpy(dest, src, len);
 #else
     u8* d = dest;
     const u8* s = src;

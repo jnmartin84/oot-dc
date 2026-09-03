@@ -19,11 +19,35 @@ if not shutil.which(CC):
     print("  source /opt/toolchains/dc/kos/environ.sh")
     exit(1)
 
-EXTRACTED = "extracted/gc-eu-mq-dbg"
+import sys
+
+# VERSION + MIPS-free mode. With DC_MIPS_FREE=1 (or --mips-free), every input that
+# was read from the N64/MIPS build (build/<v>/{.ld,.map,.elf,spec,.z64}) is instead
+# generated on the host by pc_tools/dc_meta.py -- no MIPS toolchain, any supported
+# ROM. The ROM (VROM) layout is recomputed from DC segment sizes (option A).
+VERSION = os.environ.get("DC_VERSION", "gc-eu-mq-dbg")
+MIPS_FREE = os.environ.get("DC_MIPS_FREE") == "1" or "--mips-free" in sys.argv
+
+EXTRACTED = f"extracted/{VERSION}"
 BUILD_DIR = "build_dc/assets"
 DATA_DIR = "assets_dc"
 
-CFLAGS = "-c -g -O0 -fno-common -fno-toplevel-reorder -fno-zero-initialized-in-bss -D_LANGUAGE_C -DOOT_VERSION=GC_EU_MQ_DBG -DLINUX -D__DREAMCAST__ -DASSET_BUILD -DPLATFORM_GC=1 -DPLATFORM_N64=0 -DPLATFORM_IQUE=0 -DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG -DDEBUG_FEATURES=1 -DNON_MATCHING -Iinclude -Iextracted/gc-eu-mq-dbg -Ibuild/gc-eu-mq-dbg -I."
+_meta = None
+if MIPS_FREE:
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import dc_meta
+    print(f"[mips-free] generating metadata for {VERSION} (no MIPS build inputs)")
+    _meta = dc_meta.gather(VERSION)
+    SPEC_PATH = _meta["spec_path"]
+    _asset_defs = " ".join(dc_meta.cpp_defines(_meta["cfg"]))
+    CFLAGS = ("-c -g -O0 -fno-common -fno-toplevel-reorder -fno-zero-initialized-in-bss "
+              "-D_LANGUAGE_C -DLINUX -D__DREAMCAST__ -DASSET_BUILD "
+              "-DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG "
+              f"{_asset_defs} "
+              f"-Iinclude -Iextracted/{VERSION} -Ibuild_dc/meta -Ibuild/{VERSION} -I.")
+else:
+    SPEC_PATH = f"build/{VERSION}/spec"
+    CFLAGS = "-c -g -O0 -fno-common -fno-toplevel-reorder -fno-zero-initialized-in-bss -D_LANGUAGE_C -DOOT_VERSION=GC_EU_MQ_DBG -DLINUX -D__DREAMCAST__ -DASSET_BUILD -DPLATFORM_GC=1 -DPLATFORM_N64=0 -DPLATFORM_IQUE=0 -DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG -DDEBUG_FEATURES=1 -DNON_MATCHING -Iinclude -Iextracted/gc-eu-mq-dbg -Ibuild/gc-eu-mq-dbg -I."
 
 os.makedirs(BUILD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -35,11 +59,15 @@ print(f"=== Building Dreamcast assets ===\n")
 # Parse linker script for segment bases
 # =============================================================================
 segment_bases = {}
-ld_path = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.ld'
-if os.path.exists(ld_path):
-    with open(ld_path, 'r') as f:
-        for match in re.finditer(r'\.\.(\w+)\s+(0x[0-9A-Fa-f]+)\s*:', f.read()):
-            segment_bases[match.group(1)] = match.group(2)
+if MIPS_FREE:
+    # dc_meta returns ints; downstream linker scripts want hex strings.
+    segment_bases = {k: hex(v) for k, v in _meta["segment_bases"].items()}
+else:
+    ld_path = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.ld'
+    if os.path.exists(ld_path):
+        with open(ld_path, 'r') as f:
+            for match in re.finditer(r'\.\.(\w+)\s+(0x[0-9A-Fa-f]+)\s*:', f.read()):
+                segment_bases[match.group(1)] = match.group(2)
 
 print(f"Found {len(segment_bases)} segment bases")
 
@@ -49,33 +77,60 @@ print(f"Found {len(segment_bases)} segment bases")
 rom_segments = {}
 all_segments_map = {}
 linker_symbols = {}
-n64_map = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.map'
-if os.path.exists(n64_map):
-    with open(n64_map, 'r') as f:
-        for line in f:
-            m = re.search(r'(0x[0-9a-fA-F]+)\s+_(\w+)SegmentRom(Start|End)\b', line)
-            if m:
-                addr = int(m.group(1), 16)
-                name = m.group(2)
-                start_end = m.group(3)
-                if name not in rom_segments:
-                    rom_segments[name] = {}
-                rom_segments[name][start_end] = addr
-            
-            m = re.search(r'(0x[0-9a-fA-F]+)\s+_(\w+)Segment(Rom)?(Start|End)\b', line)
-            if m:
-                addr = int(m.group(1), 16)
-                name = m.group(2)
-                has_rom = m.group(3) is not None
-                start_end = m.group(4)
-                key = (name, has_rom)
-                if key not in all_segments_map:
-                    all_segments_map[key] = {}
-                all_segments_map[key][start_end] = addr
-            
-            m = re.match(r'\s+(0x[0-9a-fA-F]+)\s+(D_[0-9A-Fa-f]+)\s*=', line)
-            if m:
-                linker_symbols[m.group(2)] = int(m.group(1), 16)
+if MIPS_FREE:
+    linker_symbols = dict(_meta["linker_symbols"])
+
+    # Option A: recompute the DC VROM layout cumulatively from DC segment sizes.
+    # gDmaDataTable (via _NAMESegmentRomStart/End) and gVromTable both come from
+    # this single layout, so DMA lookups stay consistent by construction. VRAM
+    # (non-rom) boundaries come from the fixed segment_bases (segment slots).
+    def optionA_maps(sizes):
+        # Segments dc_assets does not compile (makerom/boot/code/...) fall back to
+        # their baserom sizes so their VROM slots stay realistic; compiled asset
+        # segments (and audio) override with real DC sizes.
+        merged = dict(_meta["baserom_sizes"])
+        merged.update(sizes)
+        layout = dc_meta.compute_vrom_layout(
+            _meta["dma_order"], merged, _meta["romaligns"])
+        asm, rs = {}, {}
+        for name, (s, e) in layout.items():
+            asm[(name, True)] = {'Start': s, 'End': e}
+            rs[name] = {'Start': s, 'End': e}
+        for name, base in _meta["segment_bases"].items():
+            asm[(name, False)] = {'Start': base, 'End': base + sizes.get(name, 0)}
+        return asm, rs
+
+    # Seed with zero sizes for the PHASE-3 pass (VROM values there are unused);
+    # refreshed with real DC sizes just before PHASE 6.
+    all_segments_map, rom_segments = optionA_maps({})
+else:
+    n64_map = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.map'
+    if os.path.exists(n64_map):
+        with open(n64_map, 'r') as f:
+            for line in f:
+                m = re.search(r'(0x[0-9a-fA-F]+)\s+_(\w+)SegmentRom(Start|End)\b', line)
+                if m:
+                    addr = int(m.group(1), 16)
+                    name = m.group(2)
+                    start_end = m.group(3)
+                    if name not in rom_segments:
+                        rom_segments[name] = {}
+                    rom_segments[name][start_end] = addr
+
+                m = re.search(r'(0x[0-9a-fA-F]+)\s+_(\w+)Segment(Rom)?(Start|End)\b', line)
+                if m:
+                    addr = int(m.group(1), 16)
+                    name = m.group(2)
+                    has_rom = m.group(3) is not None
+                    start_end = m.group(4)
+                    key = (name, has_rom)
+                    if key not in all_segments_map:
+                        all_segments_map[key] = {}
+                    all_segments_map[key][start_end] = addr
+
+                m = re.match(r'\s+(0x[0-9a-fA-F]+)\s+(D_[0-9A-Fa-f]+)\s*=', line)
+                if m:
+                    linker_symbols[m.group(2)] = int(m.group(1), 16)
 
 print(f"Found {len(rom_segments)} ROM segments")
 
@@ -83,16 +138,19 @@ print(f"Found {len(rom_segments)} ROM segments")
 # Parse audio sub-segment symbols from N64 ELF
 # =============================================================================
 audio_symbols = {}
-n64_elf = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.elf'
-if os.path.exists(n64_elf):
-    r = subprocess.run(f"nm {n64_elf}", shell=True, capture_output=True, text=True)
-    if r.returncode == 0:
-        for line in r.stdout.split('\n'):
-            m = re.match(r'([0-9a-fA-F]+)\s+[AT]\s+((Sequence|Soundfont|SampleBank)_\d+_(Start|Size))$', line)
-            if m:
-                addr = int(m.group(1), 16)
-                sym_name = m.group(2)
-                audio_symbols[sym_name] = addr
+if MIPS_FREE:
+    audio_symbols = dict(_meta["audio_symbols"])
+else:
+    n64_elf = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.elf'
+    if os.path.exists(n64_elf):
+        r = subprocess.run(f"nm {n64_elf}", shell=True, capture_output=True, text=True)
+        if r.returncode == 0:
+            for line in r.stdout.split('\n'):
+                m = re.match(r'([0-9a-fA-F]+)\s+[AT]\s+((Sequence|Soundfont|SampleBank)_\d+_(Start|Size))$', line)
+                if m:
+                    addr = int(m.group(1), 16)
+                    sym_name = m.group(2)
+                    audio_symbols[sym_name] = addr
 
 print(f"Found {len(audio_symbols)} audio sub-segment symbols")
 
@@ -101,7 +159,7 @@ print(f"Found {len(audio_symbols)} audio sub-segment symbols")
 # =============================================================================
 segments = {}
 seg_name = None
-with open('build/gc-eu-mq-dbg/spec', 'r') as f:
+with open(SPEC_PATH, 'r') as f:
     for line in f:
         line = line.strip()
         if 'beginseg' in line:
@@ -113,8 +171,8 @@ with open('build/gc-eu-mq-dbg/spec', 'r') as f:
             build_path = line.split('"')[1]
             possible_paths = [
                 build_path.replace('build/', 'extracted/').replace('.o', '.c'),
-                build_path.replace('build/gc-eu-mq-dbg/', '').replace('.o', '.c'),
-                build_path.replace('build/gc-eu-mq-dbg/', 'extracted/gc-eu-mq-dbg/').replace('.o', '.c'),
+                build_path.replace(f'build/{VERSION}/', '').replace('.o', '.c'),
+                build_path.replace(f'build/{VERSION}/', f'extracted/{VERSION}/').replace('.o', '.c'),
             ]
             c_path = None
             for p in possible_paths:
@@ -424,6 +482,11 @@ print(f"\nBuilt {success}/{len(segments)} segments")
 # =============================================================================
 print("\n=== Regenerating segments.elf with DC sizes ===")
 
+if MIPS_FREE:
+    # Recompute the canonical option-A VROM layout now that we know DC sizes.
+    # segments.elf (below) and vrom_table.h (PHASE 8) both read these globals.
+    all_segments_map, rom_segments = optionA_maps(built_segments)
+
 if generate_segments_elf(built_segments):
     print(f"Regenerated segments.elf with {len(built_segments)} DC-sized segments")
 else:
@@ -573,31 +636,47 @@ print(f"Generated src/dreamcast/vrom_table.h with {len(entries)} entries")
 # =============================================================================
 print("\n=== Extracting audio segments from ROM ===")
 
-# IMPORTANT: Extract from the BUILT ROM, not the baserom. The decomp build may produce
-# slightly different Audiobank/Audioseq/Audiotable layouts (e.g. different soundfont
-# sub-segment padding). Since our linker symbols (Soundfont_N_Start, etc.) come from
-# the built ROM's map file, the .bin data must also come from the built ROM to match.
-BUILT_ROM = "build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.z64"
-BASEROM = "baseroms/gc-eu-mq-dbg/baserom-decompressed.z64"
-
-audio_segments = {}
-for name, addrs in rom_segments.items():
-    if name in ('Audiobank', 'Audioseq', 'Audiotable'):
-        if 'Start' in addrs and 'End' in addrs:
-            audio_segments[name] = (addrs['Start'], addrs['End'])
-
-# Prefer built ROM since linker symbols match it; fall back to baserom
-if os.path.exists(BUILT_ROM):
-    audio_rom = BUILT_ROM
-    print(f"  Using built ROM: {BUILT_ROM}")
-elif os.path.exists(BASEROM):
-    audio_rom = BASEROM
-    print(f"  WARNING: Built ROM not found, falling back to baserom: {BASEROM}")
-    print(f"  Audio data may not match linker symbols if decomp build differs from baserom")
+if MIPS_FREE:
+    # MIPS-free: read the audio blobs straight from the decompressed baserom, at
+    # the baserom's own dmadata offsets (dc_meta.audio_blobs). Our audio symbols
+    # (Soundfont_N/Sequence_N/...) are also derived from that same baserom, so the
+    # .bin data and the sub-segment offsets are self-consistent. (The option-A
+    # rom_segments VROM values are the DC layout, NOT baserom offsets, so they
+    # must NOT be used to seek the baserom.)
+    BASEROM = f"baseroms/{VERSION}/baserom-decompressed.z64"
+    audio_segments = dict(_meta["audio_blobs"])
+    if os.path.exists(BASEROM):
+        audio_rom = BASEROM
+        print(f"  Using baserom: {BASEROM}")
+    else:
+        audio_rom = None
+        print(f"  WARNING: {BASEROM} not found, skipping audio extraction")
 else:
-    audio_rom = None
-    print(f"  WARNING: Neither {BUILT_ROM} nor {BASEROM} found, skipping audio extraction")
-    print(f"  Audio .bin files must be manually placed in {DATA_DIR}/")
+    # IMPORTANT: Extract from the BUILT ROM, not the baserom. The decomp build may produce
+    # slightly different Audiobank/Audioseq/Audiotable layouts (e.g. different soundfont
+    # sub-segment padding). Since our linker symbols (Soundfont_N_Start, etc.) come from
+    # the built ROM's map file, the .bin data must also come from the built ROM to match.
+    BUILT_ROM = "build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.z64"
+    BASEROM = "baseroms/gc-eu-mq-dbg/baserom-decompressed.z64"
+
+    audio_segments = {}
+    for name, addrs in rom_segments.items():
+        if name in ('Audiobank', 'Audioseq', 'Audiotable'):
+            if 'Start' in addrs and 'End' in addrs:
+                audio_segments[name] = (addrs['Start'], addrs['End'])
+
+    # Prefer built ROM since linker symbols match it; fall back to baserom
+    if os.path.exists(BUILT_ROM):
+        audio_rom = BUILT_ROM
+        print(f"  Using built ROM: {BUILT_ROM}")
+    elif os.path.exists(BASEROM):
+        audio_rom = BASEROM
+        print(f"  WARNING: Built ROM not found, falling back to baserom: {BASEROM}")
+        print(f"  Audio data may not match linker symbols if decomp build differs from baserom")
+    else:
+        audio_rom = None
+        print(f"  WARNING: Neither {BUILT_ROM} nor {BASEROM} found, skipping audio extraction")
+        print(f"  Audio .bin files must be manually placed in {DATA_DIR}/")
 
 if audio_rom and not audio_segments:
     print(f"  WARNING: No audio segment ROM addresses found in map file")

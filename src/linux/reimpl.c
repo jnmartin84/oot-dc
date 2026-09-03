@@ -258,6 +258,14 @@ static const VromEntry* find_segment(uintptr_t vrom) {
     if (vrom < cand->vrom_end) {
         return cand;
     }
+    /* VROM falls in the romalign padding between cand's (DC-size) end and the
+       next segment's start. N64 hardware just DMAs those ROM bytes (e.g.
+       z_message.c textboxBackgroundIdx*0x900 indexing past the two textures
+       in message_texture_static). Charge the read to cand; the reader short-
+       reads the .bin and zero-fills the rest. */
+    if (lo < gVromCount && vrom < gVromTable[lo].vrom_start) {
+        return cand;
+    }
     return NULL;
 }
 
@@ -321,6 +329,22 @@ void DmaMgr_LoadAll(void) {
     }
 }
 
+/* Copy from a RAM-resident segment image, zero-filling any part of the request
+   that lies past the image (VROM alignment-gap reads, see find_segment). */
+static void dma_copy_clamped(void* ram, const void* buf, size_t bufsize, uintptr_t offset, size_t size) {
+    if (offset >= bufsize) {
+        memset(ram, 0, size);
+        return;
+    }
+    if (offset + size > bufsize) {
+        size_t avail = bufsize - offset;
+        memcpy(ram, (const u8*)buf + offset, avail);
+        memset((u8*)ram + avail, 0, size - avail);
+        return;
+    }
+    memcpy(ram, (const u8*)buf + offset, size);
+}
+
 s32 DmaMgr_DmaRomToRam(uintptr_t rom, void* ram, size_t size) {
     char path[256];
 
@@ -333,27 +357,27 @@ s32 DmaMgr_DmaRomToRam(uintptr_t rom, void* ram, size_t size) {
     uintptr_t offset = rom - seg->vrom_start;
 
     if (strstr(seg->name, "link_an")) {
-        memcpy(ram, link_data + offset, size);
+        dma_copy_clamped(ram, link_data, 2513770, offset, size);
         return 0;
     }
     if (strstr(seg->name, "do_ac")) {
 //        printf("DMAMGR doaction copy\n");
-        memcpy(ram, actionDmaBuf + offset, size);
+        dma_copy_clamped(ram, actionDmaBuf, sizeof(actionDmaBuf), offset, size);
         return 0;
     }
     if (strstr(seg->name, "nes_fo")) {
 //        printf("DMAMGR font copy\n");
-        memcpy(ram, fontDmaBuf + offset, size);
+        dma_copy_clamped(ram, fontDmaBuf, sizeof(fontDmaBuf), offset, size);
         return 0;
     }
     if (strstr(seg->name, "nes_mes")) {
 //        printf("DMAMGR nesmsg copy\n");
-        memcpy(ram, nesMsgDmaBuf + offset, size);
+        dma_copy_clamped(ram, nesMsgDmaBuf, sizeof(nesMsgDmaBuf), offset, size);
         return 0;
     }
     if (strstr(seg->name, "message_st")) {
 //        printf("DMAMGR msgstatic copy\n");
-        memcpy(ram, msgStaticDmaBuf + offset, size);
+        dma_copy_clamped(ram, msgStaticDmaBuf, sizeof(msgStaticDmaBuf), offset, size);
         return 0;
     }
     snprintf(path, sizeof(path), "/pc/assets_dc/%s.bin", seg->name);
@@ -375,6 +399,13 @@ s32 DmaMgr_DmaRomToRam(uintptr_t rom, void* ram, size_t size) {
     if (offset + size > (size_t)file_size) {
         printf("DMA WARN: %s offset 0x%X + size 0x%X > file size 0x%lX\n", 
                seg->name, (unsigned)offset, (unsigned)size, file_size);
+        /* Past-the-.bin bytes: zero-fill (N64 reads ROM padding / next file). */
+        memset(ram, 0, size);
+        if (offset >= (size_t)file_size) {
+            fclose(f);
+            return 0;
+        }
+        size = (size_t)file_size - offset;
     }
     
     if ((file_size < 2049) || (file_size > (128*1024)) || (strncmp(seg->name, "g_pn", 4) == 0)) {

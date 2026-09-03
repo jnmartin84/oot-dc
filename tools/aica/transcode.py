@@ -21,6 +21,19 @@ try:
     _HAVE_SCIPY = True
 except Exception:
     _HAVE_SCIPY = False
+    # scipy's resample_poly is required for the approved 2x-downsample output. The
+    # stdlib decimate fallback produces WRONG ADPCM -> silent/broken sampled audio.
+    # Fail loudly by default so this never silently ships (opt back in explicitly).
+    if os.environ.get("AICA_ALLOW_STDLIB_DECIMATE") != "1":
+        raise ImportError(
+            "tools/aica/transcode.py requires scipy (+numpy) for correct sample "
+            "downsampling; the stdlib fallback produces broken sampled audio. "
+            "Create/populate the build venv and use it:\n"
+            "    python3 -m venv .venv && .venv/bin/pip install -U -r requirements.txt\n"
+            "    make -f Makefile.dc PYTHON=.venv/bin/python3 ...\n"
+            "To deliberately accept the inferior stdlib path, set "
+            "AICA_ALLOW_STDLIB_DECIMATE=1."
+        )
 
 import vadpcm
 import yamaha_adpcm

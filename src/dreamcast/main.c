@@ -34,7 +34,8 @@ extern u64 gMorphaWaterTex[];
    discriminator to force ADDITIVE blend for the steam — its transparent texels
    are black (intensity 0), so normal alpha-blend + bilinear bleeds a dark fringe. */
 extern u64 gFreezardSteamTex[];
-#define RENDER_240P
+
+//#define RENDER_240P
 
 /* Render resolution (compile-time). Default: 640x480, with N64 320x240 coords
    scaled x2. Build with -DRENDER_240P for native 320x240 (x1 scale, no upscale,
@@ -53,6 +54,7 @@ extern u64 gFreezardSteamTex[];
 #endif
 
 static u8 pvrOOM = 0;
+static u32 sOomLogged; /* PVROOM: diagnostics cap */
 
 static int sFrameCount = 0;
 static u32 sRdpHalf1 = 0;
@@ -1035,6 +1037,7 @@ static TextureCacheEntry* get_texture(u32 addr, u32 fmt, u32 siz, u32 width, u32
         pvr_ptr_t pvr_tex = pvr_mem_malloc(padded_w * padded_h * 2);
         if (!pvr_tex) {
             pvrOOM = 1;
+            if (sOomLogged < 64) { sOomLogged++; printf("PVROOM: tex upload alloc %u B failed\n", (unsigned)(padded_w * padded_h * 2)); }
             PROF_END(sPF_TexUpload);
             PROF_END(sPF_Tex);
             if (!dirtyNode) {
@@ -3152,7 +3155,11 @@ static void handle_vtx(u32 w0, u32 w1) {
     int n = (w0 >> 12) & 0xFF;
     int v0 = ((w0 >> 1) & 0x7F) - n;
     Vtx* src = (Vtx*)pc_resolve_addr(w1);
-    if (!src || v0 < 0) {
+    if (!src || v0 < 0 || v0 + n > UCODE_MAX_VERTS) {
+        if (src && v0 + n > UCODE_MAX_VERTS) {
+            static u32 sVtxOverLogged;
+            if (sVtxOverLogged < 16) { sVtxOverLogged++; printf("VTX_OVER: v0=%d n=%d > %d\n", v0, n, UCODE_MAX_VERTS); }
+        }
         PROF_END(sPF_Vtx);
         return;
     }
@@ -4394,7 +4401,7 @@ static void handle_bg(u32 w0, u32 w1) {
 
             if (sBgCachedTexID) pvr_mem_free(sBgCachedTexID);
             pvr_ptr_t pvr_tex = pvr_mem_malloc(pw * ph * 2);
-            if (!pvr_tex) { pvrOOM = 1; PROF_END(sPF_Draw2D); return; }
+            if (!pvr_tex) { pvrOOM = 1; if (sOomLogged < 64) { sOomLogged++; printf("PVROOM: 2D/bg alloc %u B failed\n", (unsigned)(pw * ph * 2)); } PROF_END(sPF_Draw2D); return; }
             /* TWIDDLED to match the (now-twiddled) header at the cxt below — pw/ph
                are pow2, and this only re-uploads when the background changes. */
             pvr_txr_load_ex(tex_data, pvr_tex, pw, ph, PVR_TXRLOAD_16BPP);
@@ -4807,6 +4814,7 @@ void pc_process_displaylist(Gfx* dl) {
 
     if (pvrOOM) {
         pvrOOM = 0;
+        printf("TEXWIPE: pvrOOM end-of-frame\n");
         flush_texture_cache_external();
     }
 

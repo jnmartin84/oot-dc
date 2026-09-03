@@ -37,7 +37,13 @@ extern int snd_sh4_to_aica(void* packet, uint32_t size);
 const unsigned char* gAicaAdpcmPoolBase = NULL;
 
 /* VROM base of the Audiotable segment; sample->sampleAddr - this = src_offset key. */
-#define AUDIOTABLE_VROM_BASE 0x94860u
+/* The Audiotable's VROM start, from the linker symbol so the sample-lookup key
+   tracks the real layout. This was a hardcoded 0x94860 (the rebuilt N64 map's
+   value); the MIPS-free asset packer (option A) places Audiotable at the
+   baserom's 0x94870, so every key came out +0x10 and every sample_lookup
+   silently missed -> all sampled voices dead, synth voices unaffected. */
+extern u8 _AudiotableSegmentRomStart[];
+#define AUDIOTABLE_VROM_BASE ((u32)_AudiotableSegmentRomStart)
 
 #define NUM_AICA_CHANNELS 64
 #define MAX_VOICES 64            /* must be >= gAudioCtx.numNotes */
@@ -126,6 +132,13 @@ static AramEntry* cache_find(u32 key) {
     return NULL;
 }
 
+/* Capped, greppable diagnostics for the otherwise-silent sample-voice bail-outs
+   (grep the serial log for "AICA_SKIP:"). Capped so a systematic failure can't
+   flood the console. */
+static u32 sSkipLogged;
+#define AICA_SKIP_LOG(...) \
+    do { if (sSkipLogged < 48) { sSkipLogged++; printf("AICA_SKIP: " __VA_ARGS__); } } while (0)
+
 /* Stage a sample's ADPCM into ARAM, returning its cache entry (refs already
    incremented), or NULL on failure. */
 static AramEntry* cache_acquire(u32 key, u32 pool_offset, u32 byte_len) {
@@ -151,7 +164,10 @@ static AramEntry* cache_acquire(u32 key, u32 pool_offset, u32 byte_len) {
             victim->aram = 0;
             aram = (u32)snd_mem_malloc(byte_len);
         }
-        if (aram == 0) return NULL;
+        if (aram == 0) {
+            AICA_SKIP_LOG("ARAM alloc fail key=%08X len=%u\n", (unsigned)key, (unsigned)byte_len);
+            return NULL;
+        }
     }
 
     /* upload ADPCM bytes from the resident pool to ARAM */
@@ -161,6 +177,7 @@ static AramEntry* cache_acquire(u32 key, u32 pool_offset, u32 byte_len) {
     e = cache_find(KEY_EMPTY);
     if (e == NULL) {
         /* table full of resident entries — shouldn't happen with eviction above */
+        AICA_SKIP_LOG("cache table full key=%08X\n", (unsigned)key);
         snd_mem_free(aram);
         return NULL;
     }
@@ -249,16 +266,30 @@ static int resolve(NoteSubEu* sub, u32* outKey, Resolved* res, AramEntry** outEn
     }
 
     /* real sample */
-    if (gAicaAdpcmPoolBase == NULL) return 0; /* pool not resident yet: skip safely */
-    if (sub->tunedSample == NULL || sub->tunedSample->sample == NULL) return 0;
+    if (gAicaAdpcmPoolBase == NULL) { AICA_SKIP_LOG("pool not resident\n"); return 0; }
+    if (sub->tunedSample == NULL || sub->tunedSample->sample == NULL) {
+        AICA_SKIP_LOG("no tunedSample\n");
+        return 0;
+    }
     {
         Sample* s = sub->tunedSample->sample;
         u32 key = (u32)s->sampleAddr - AUDIOTABLE_VROM_BASE;
         const AicaSampleDesc* d;
-        if (!sample_lookup(key, &d)) return 0;
+        if (!sample_lookup(key, &d)) {
+            /* the key MUST equal an offline src_offset; print both inputs so an
+               off-by-N base mismatch is obvious in the serial log */
+            AICA_SKIP_LOG("lookup MISS key=%08X sampleAddr=%08X base=%08X\n",
+                          (unsigned)key, (unsigned)(uintptr_t)s->sampleAddr,
+                          (unsigned)AUDIOTABLE_VROM_BASE);
+            return 0;
+        }
 
         AramEntry* e = cache_acquire(key, d->pool_offset, d->byte_len);
-        if (e == NULL) return 0;
+        if (e == NULL) {
+            AICA_SKIP_LOG("acquire fail key=%08X pool_off=%08X len=%u\n",
+                          (unsigned)key, (unsigned)d->pool_offset, (unsigned)d->byte_len);
+            return 0;
+        }
 
         *outEntry = e;
         *outKey = key;

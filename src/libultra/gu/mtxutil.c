@@ -6,6 +6,7 @@ void guMtxF2L(f32 mf[4][4], Mtx* m) {
     shz_memcpy4_16(m, mf);
    SHZ_MEMORY_BARRIER_SOFT();
 //  hack. revert. 
+  // memcpy(m, mf, 64);
 #else
     s32 i, j;
     s32 e1, e2;
@@ -30,6 +31,7 @@ void guMtxL2F(f32 mf[4][4], Mtx* m) {
     shz_memcpy4_16(mf, m);
     SHZ_MEMORY_BARRIER_SOFT();
    // hack. revert. 
+   //memcpy(m, mf, 64);
 #else
     s32 i, j;
     u32 e1, e2;
