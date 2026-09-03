@@ -411,7 +411,7 @@ assets:
 # silently produces broken sampled audio. Override with `make PYTHON=... ` if needed.
 PYTHON ?= .venv/bin/python3
 
-# Mac-native (MIPS-free) extraction: builds extracted/$(DC_VERSION)/ and the
+# Host-only (MIPS-free) extraction: builds extracted/$(DC_VERSION)/ and the
 # build/$(DC_VERSION)/ inputs this Makefile + dc_assets.py read (texture .inc.c,
 # text encodings, soundfont headers/tables, size headers, dmadata_table_spec.h)
 # straight from baseroms/$(DC_VERSION)/baserom.z64. Replaces the main Makefile's

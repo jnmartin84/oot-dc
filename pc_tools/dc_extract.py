@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-dc_extract.py -- Mac-native (MIPS-free) extraction driver for the Dreamcast build.
+dc_extract.py -- Host-only (MIPS-free) extraction driver for the Dreamcast build.
 
 Produces, from just `baseroms/<version>/baserom.z64`, everything the DC build reads
 that the N64 decomp normally produces via `make setup` + the MIPS `make`:
