@@ -57,7 +57,7 @@ void SsSram_Dma(void* dramAddr, size_t size, s32 direction) {
 
 /*
  * Dreamcast SRAM: a 32 KiB RAM mirror of the N64 save SRAM, backed by one VMU
- * package file (oot.rec, 65 blocks) on the first memory card found.
+ * package file (oot.rec, 66 blocks) on the first memory card found.
  *
  * KOS's fs_vmu reads the whole file on open and rewrites the whole file on
  * close, so the mirror is loaded once and each SsSram write is one full
@@ -201,7 +201,7 @@ void SsSram_ReadWrite(s32 addr, void* dramAddr, size_t size, s32 direction) {
             sDcSramOnVmu = 1; /* don't clobber an existing file with a blank mirror */
         }
         if (memcmp(sDcSram + offset, dramAddr, size) == 0 && sDcSramOnVmu) {
-            return; /* nothing changed (e.g. file-select header rewrites): skip the 65-block rewrite */
+            return; /* nothing changed (e.g. file-select header rewrites): skip the 66-block rewrite */
         }
         memcpy(sDcSram + offset, dramAddr, size);
         if (DcSram_Store()) {
