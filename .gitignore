@@ -1,3 +1,5 @@
+include/platform_info.h
+
 # Cache files
 __pycache__/
 .pyc
