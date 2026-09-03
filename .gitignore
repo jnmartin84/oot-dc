@@ -50,3 +50,6 @@ src/dreamcast/main_gl.c
 
 # AICA beam-encode cache
 tools/aica/.encode_cache/
+
+# Dreamcast disc images (make -f Makefile.dc cdi)
+/oot*.cdi

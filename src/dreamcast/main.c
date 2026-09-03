@@ -5022,6 +5022,11 @@ int main(int argc, char** argv) {
         pvr_poly_compile(&sPvrHdrCol, &cxt);
     }
 
+    {
+        extern void DcFs_Probe(void);
+        DcFs_Probe(); /* /pc (dcload) or /cd (disc): sets gDcFsRoot for all asset loads */
+    }
+
     if (gDcEnableAudio) {
         // Load audio data into RAM before audio system init
         extern void AudioRom_LoadAll(void);

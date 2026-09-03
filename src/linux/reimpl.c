@@ -60,6 +60,35 @@ u64 aspMainTextStart[1] = {0};
 //u8 Sequence_109_Size[1] = {0}; // TODO: Determine proper type
 //u8 Sequence_109_Start[1] = {0}; // TODO: Determine proper type
 
+/* Where the runtime asset files live: "/pc" (dcload host filesystem) or "/cd"
+ * (a burned/ODE disc made by `make -f Makefile.dc cdi`). Probed once at boot,
+ * same scheme as the MK64/SF64 ports. */
+const char* gDcFsRoot = "/pc";
+
+void DcFs_Probe(void) {
+    static const char* roots[] = { "/pc", "/cd" };
+    char path[64];
+    int i;
+
+    for (i = 0; i < 2; i++) {
+        FILE* f;
+        snprintf(path, sizeof(path), "%s/assets_dc/link_animetion.bin", roots[i]);
+        printf("assets: %s ... ", roots[i]);
+        f = fopen(path, "rb");
+        if (f) {
+            fclose(f);
+            gDcFsRoot = roots[i];
+            printf("found\n");
+            return;
+        }
+        printf("not found\n");
+    }
+    printf("assets: assets_dc/ not found on /pc or /cd, halting\n");
+    for (;;) {
+        thd_sleep(1000);
+    }
+}
+
 void AudioDebug_VerifySetup(void) {
     printf("=== AUDIO DEBUG ===\n");
 
@@ -78,7 +107,7 @@ void AudioDebug_VerifySetup(void) {
     int i;
     for (i = 0; i < 3; i++) {
         char path[256];
-        snprintf(path, sizeof(path), "/pc/assets_dc/%s.bin", bins[i]);
+        snprintf(path, sizeof(path), "%s/assets_dc/%s.bin", gDcFsRoot, bins[i]);
 
         FILE* f = fopen(path, "rb");
         if (f) {
@@ -292,25 +321,25 @@ void DmaMgr_LoadAll(void) {
     char path[256];
     // jn64 TODO find a better place for this init
         {
-        snprintf(path, sizeof(path), "/pc/assets_dc/nes_font_static.bin");
+        snprintf(path, sizeof(path), "%s/assets_dc/nes_font_static.bin", gDcFsRoot);
         FILE* lf = fopen(path, "rb");
         size_t read = fread(fontDmaBuf, 1, 17920, lf);
         fclose(lf);
         }
     {
-        snprintf(path, sizeof(path), "/pc/assets_dc/do_action_static.bin");
+        snprintf(path, sizeof(path), "%s/assets_dc/do_action_static.bin", gDcFsRoot);
         FILE* lf = fopen(path, "rb");
         size_t read = fread(actionDmaBuf, 1, 33408, lf);
         fclose(lf);
     }
    {
-        snprintf(path, sizeof(path), "/pc/assets_dc/message_static.bin");
+        snprintf(path, sizeof(path), "%s/assets_dc/message_static.bin", gDcFsRoot);
         FILE* lf = fopen(path, "rb");
         size_t read = fread(msgStaticDmaBuf, 1, 16768, lf);
         fclose(lf);
     }
    {
-        snprintf(path, sizeof(path), "/pc/assets_dc/nes_message_data_static.bin");
+        snprintf(path, sizeof(path), "%s/assets_dc/nes_message_data_static.bin", gDcFsRoot);
         FILE* lf = fopen(path, "rb");
         size_t read = fread(nesMsgDmaBuf, 1, 229661, lf);
         fclose(lf);
@@ -322,7 +351,7 @@ void DmaMgr_LoadAll(void) {
             link_inited = 255;
         }
         memset(link_data, 0, 2513920);
-        snprintf(path, sizeof(path), "/pc/assets_dc/link_animetion.bin");
+        snprintf(path, sizeof(path), "%s/assets_dc/link_animetion.bin", gDcFsRoot);
         FILE* lf = fopen(path, "rb");
         size_t read = fread(link_data, 1, 2513770, lf);
         fclose(lf);
@@ -380,7 +409,7 @@ s32 DmaMgr_DmaRomToRam(uintptr_t rom, void* ram, size_t size) {
         dma_copy_clamped(ram, msgStaticDmaBuf, sizeof(msgStaticDmaBuf), offset, size);
         return 0;
     }
-    snprintf(path, sizeof(path), "/pc/assets_dc/%s.bin", seg->name);
+    snprintf(path, sizeof(path), "%s/assets_dc/%s.bin", gDcFsRoot, seg->name);
 
     
     int need_to_cache = 0;
@@ -495,7 +524,7 @@ static int AudioRom_LoadSegment(const char* name, uintptr_t vromStart, uintptr_t
     size_t size = vromEnd - vromStart;
     char path[256];
 
-    snprintf(path, sizeof(path), "/pc/assets_dc/%s.bin", name);
+    snprintf(path, sizeof(path), "%s/assets_dc/%s.bin", gDcFsRoot, name);
 
     FILE* f = fopen(path, "rb");
     if (!f) {
@@ -536,7 +565,9 @@ void AudioRom_LoadAll(void) {
         extern const unsigned char* gAicaAdpcmPoolBase;
         uintptr_t offset = (uintptr_t)_AudiotableSegmentRomStart - AUDIO_ROM_BASE;
         size_t cap = AUDIO_ROM_END - (uintptr_t)_AudiotableSegmentRomStart;
-        FILE* f = fopen("/pc/assets_dc/adpcm_pool.bin", "rb");
+        char path[256];
+        snprintf(path, sizeof(path), "%s/assets_dc/adpcm_pool.bin", gDcFsRoot);
+        FILE* f = fopen(path, "rb");
         if (!f) {
             printf("AudioRom: Failed to open adpcm_pool.bin\n");
             return;

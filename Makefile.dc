@@ -516,12 +516,34 @@ $(BUILD_DIR)/src/%.o: src/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -c $< -o $@
 
+# Disc images (mkdcdisc: https://github.com/eldstal/mkdcdisc). The game probes
+# /pc (dcload) then /cd at boot, so the same ELF runs from either. ocarina.ico
+# ships on the disc root: the VMU save icon is loaded from it at runtime.
+DISC_NAME   ?= Ocarina of Time
+DISC_AUTHOR ?= jnmartin84
+ICON     := ocarina.ico
+CDI      := oot.cdi
+CDI_ODE  := oot-ode.cdi
+
+cdi: $(CDI)
+cdi-ode: $(CDI_ODE)
+
+$(CDI): $(TARGET) assets_dc/adpcm_pool.bin $(ICON)
+	mkdcdisc -a "$(DISC_AUTHOR)" -n "$(DISC_NAME)" -d assets_dc -f $(ICON) -e $(TARGET) -o $@
+
+# -N: no data-track padding (small image for ODEs / emulators; not for CD-R)
+$(CDI_ODE): $(TARGET) assets_dc/adpcm_pool.bin $(ICON)
+	mkdcdisc -a "$(DISC_AUTHOR)" -n "$(DISC_NAME)" -d assets_dc -f $(ICON) -e $(TARGET) -o $@ -N
+
+clean-disc:
+	rm -f $(CDI) $(CDI_ODE)
+
 clean:
 	rm -rf $(BUILD_DIR)/src $(TARGET) 
 
 clean-assets:
 	rm -rf $(ASSET_DIR) assets_dc
 
-clean-all: clean clean-assets
+clean-all: clean clean-assets clean-disc
 
-.PHONY: all clean clean-assets clean-all assets check-assets extract
+.PHONY: all clean clean-assets clean-disc clean-all assets check-assets extract cdi cdi-ode
