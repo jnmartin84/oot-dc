@@ -1,5 +1,10 @@
 # Ocarina of Time for Dreamcast
 
+## AI Disclosure
+The original author of the port, Bruce, used various LLMs to bootstrap this port and produce the PowerVR fast3d interpreter it uses.
+I have since used LLMs to rework the build system and update the documentation to accurately reflect those updates.
+I am not the original author of this project, I have just offered to clean it up and present it for people to do what they see fit with it.
+
 A native Sega Dreamcast port of *The Legend of Zelda: Ocarina of Time*, built
 from the [ZeldaRET decompilation](https://github.com/zeldaret/oot). The game
 code is compiled for the SH4 with [KallistiOS](https://github.com/KallistiOS/KallistiOS);
