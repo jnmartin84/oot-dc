@@ -25,6 +25,7 @@ GameCube Master Quest debug ROM (`gc-eu-mq-dbg`) is supported at the moment.
 * KallistiOS 2.2 or newer, with the `sh4zam` library installed from `kos-ports`
 * clang or gcc, libxml2 headers, python3
 * GNU make 3.82 or newer (macOS: `brew install make` and use `gmake`)
+* [mkdcdisc](https://github.com/eldstal/mkdcdisc), only for making `.cdi` disc images
 
 ## Building
 
@@ -46,13 +47,34 @@ make -j $(nproc) -f Makefile.dc        # build zelda.elf
 first time it runs. `Makefile.dc` has no dependency tracking, so run
 `make -f Makefile.dc clean` after editing source files.
 
-The result is `zelda.elf` plus the runtime asset files in `assets_dc/`. The
-game loads those at runtime from `/pc/assets_dc/`, i.e. over dcload's host
-filesystem, so run it with dc-tool from the repository root, for example:
+The result is `zelda.elf` plus the runtime asset files in `assets_dc/`.
+
+## Running
+
+The game looks for `assets_dc/` on `/pc` (dcload's host filesystem) first and
+then on `/cd`, so the same `zelda.elf` runs either way.
+
+**Over dcload**, from the repository root so `/pc/assets_dc/` resolves:
 
 ```bash
 sudo dc-tool-ip -t <dreamcast-ip> -x zelda.elf -c ./
 ```
+
+**From a disc image** (needs `mkdcdisc` on your `PATH`):
+
+```bash
+make -f Makefile.dc cdi        # oot.cdi: padded, for burning to CD-R
+make -f Makefile.dc cdi-ode    # oot-ode.cdi: unpadded, for ODEs
+```
+
+Both images contain `zelda.elf` as the boot binary, `assets_dc/` and
+`ocarina.ico`. `make -f Makefile.dc clean-disc` removes them.
+
+## Saving
+
+Saves go to the first VMU found, as one file `oot.rec` (66 blocks) with the
+ocarina icon. Without a VMU the game still runs and saves last for the
+session only. A VMU inserted after boot is picked up on the next save.
 
 ## Options
 
