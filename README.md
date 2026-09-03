@@ -16,15 +16,23 @@ make -f Makefile.pc
  
 
 
-for Dreamcast 
+for Dreamcast (no MIPS toolchain needed; single machine, macOS or Linux)
 
-make setup
+Requirements: KallistiOS (`source /opt/toolchains/dc/kos/environ.sh`, use bash),
+clang or gcc, libxml2, GNU make >= 3.82 (macOS: `brew install make`, i.e. gmake),
+and a Python venv with the pinned deps (scipy is required for the audio transcode):
 
-make COMPARE=0 
+    python3 -m venv .venv && .venv/bin/pip install -U pip -r requirements.txt
 
-make -f Makefile.dc assets
+Put your ROM at baseroms/gc-eu-mq-dbg/baserom.z64, then:
 
-make -f Makefile.dc
+    make -f Makefile.dc extract   # extracted/ + build/<v>/ inputs straight from the ROM (~20s)
+    make -f Makefile.dc assets    # Dreamcast asset segments + src/dreamcast/vrom_table.h
+    make -f Makefile.dc           # zelda.elf
+
+Knobs: DEBUG_FEATURES=1 (debug build; default 0 = retail behaviour), LTO=0,
+DC_VERSION=<baseroms dir> (only gc-eu-mq-dbg is supported so far).
+Makefile.dc has no dependency tracking: `make -f Makefile.dc clean` after editing.
 
 
 # The Legend of Zelda: Ocarina of Time
