@@ -7,18 +7,18 @@ the N64's RSP/RDP graphics are replaced by a display-list interpreter that draws
 on the PowerVR, and the game's music and sound effects are played through the
 AICA's hardware voices.
 
-The whole build runs on your own machine. There is no N64 build step and no
-MIPS toolchain: the layout metadata the port needs is derived from the ROM.
+The whole build runs with your host and Dreamcast toolchain.
+There is no N64 build step and no MIPS toolchain:
+the layout metadata the port needs is derived from the ROM.
 
 **No game data is included.** You need your own copy of the game. Only the
 GameCube Master Quest debug ROM (`gc-eu-mq-dbg`) is supported at the moment.
 
 ## Requirements
 
-* KallistiOS 2.2 or newer, with the `sh4zam` library installed in your KOS tree
+* KallistiOS 2.2 or newer, with the `sh4zam` library installed from `kos-ports`
 * clang or gcc, libxml2 headers, python3
-* GNU make 3.82 or newer (macOS ships 3.81: `brew install make` and use `gmake`)
-* bash, for sourcing the KOS environment
+* GNU make 3.82 or newer (macOS: `brew install make` and use `gmake`)
 
 ## Building
 
@@ -33,7 +33,7 @@ source /opt/toolchains/dc/kos/environ.sh
 
 make -f Makefile.dc extract    # decompress the ROM, extract assets, generate build inputs (~30s)
 make -f Makefile.dc assets     # compile the asset segments for the Dreamcast (a few minutes)
-make -j8 -f Makefile.dc        # build zelda.elf
+make -j $(nproc) -f Makefile.dc        # build zelda.elf
 ```
 
 `extract` builds the handful of host tools it needs with your C compiler the
@@ -45,7 +45,7 @@ game loads those at runtime from `/pc/assets_dc/`, i.e. over dcload's host
 filesystem, so run it with dc-tool from the repository root, for example:
 
 ```bash
-dc-tool-ip -t <dreamcast-ip> -x zelda.elf
+sudo dc-tool-ip -t <dreamcast-ip> -x zelda.elf -c ./
 ```
 
 ## Options
@@ -60,7 +60,7 @@ Example: `make -f Makefile.dc DEBUG_FEATURES=1`.
 
 ## Layout
 
-* `src/dreamcast/`, `src/linux/`: the Dreamcast platform layer (renderer, file loading, audio glue)
+* `src/dreamcast/`, `src/linux/`: the Dreamcast and port platform layer (renderer, file loading, audio glue)
 * `src/audio/internal/aica_synth.c`, `tools/aica/`: the AICA audio driver and its build-time sample transcoder
 * `pc_tools/`: the host-only build pipeline (`dc_extract.py`, `dc_meta.py`, `dc_assets.py`)
 * `Makefile.dc`: the Dreamcast build
