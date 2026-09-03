@@ -4,6 +4,8 @@ ifeq ($(shell $(CC) --version | grep clang),)
   OMPFLAGS := -fopenmp
 else
   OMPFLAGS :=
+  # clang: VLA-with-constant-bound is a GNU extension warning; harmless
+  CFLAGS += -Wno-gnu-folding-constant
 endif
 
 default: build_from_png

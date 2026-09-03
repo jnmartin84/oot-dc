@@ -410,6 +410,16 @@ assets:
 # The AICA transcoder REQUIRES scipy/numpy from requirements.txt; system python
 # silently produces broken sampled audio. Override with `make PYTHON=... ` if needed.
 PYTHON ?= .venv/bin/python3
+
+# Mac-native (MIPS-free) extraction: builds extracted/$(DC_VERSION)/ and the
+# build/$(DC_VERSION)/ inputs this Makefile + dc_assets.py read (texture .inc.c,
+# text encodings, soundfont headers/tables, size headers, dmadata_table_spec.h)
+# straight from baseroms/$(DC_VERSION)/baserom.z64. Replaces the main Makefile's
+# `make setup` (blocked here by its mips-linux-gnu-ld guard) + the MIPS build.
+# Host tools are clang-built on demand; needs Homebrew gmake (make >= 3.82).
+DC_VERSION ?= gc-eu-mq-dbg
+extract:
+	$(PYTHON) pc_tools/dc_extract.py --version $(DC_VERSION)
 # Bake the software reverb into the sample pool. The "known good" shipping table was
 # built with this ON; default 1 reproduces it. `make AICA_REVERB=0` for dry samples.
 AICA_REVERB ?= 1
@@ -505,4 +515,4 @@ clean-assets:
 
 clean-all: clean clean-assets
 
-.PHONY: all clean clean-assets clean-all assets check-assets
+.PHONY: all clean clean-assets clean-all assets check-assets extract
