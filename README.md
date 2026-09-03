@@ -1,7 +1,7 @@
 # Ocarina of Time for Dreamcast
 
 ## AI Disclosure
-The original author of the port, Bruce, used various LLMs to bootstrap this port and produce the PowerVR fast3d interpreter it uses.
+The original author of the port, Bruce, used various LLMs to: bootstrap this port, create the filesystem interface and produce the PowerVR fast3d interpreter it uses.
 I have since used LLMs to replace the software audio mixing, rework the build system and update the documentation to accurately reflect those updates.
 I am not the original author of this project, I have just offered to clean it up for him and present it for people to do what they see fit with it.
 
