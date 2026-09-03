@@ -9,12 +9,19 @@ CC := kos-cc
 LTO ?= 1
 LTO_FLAGS := $(if $(filter 0,$(LTO)),-fno-lto,)
 
+# Debug features knob. 0 (default, HW-validated 2026-09-03 with LTO) = retail
+# behaviour: no map select on boot, no debug camera, no on-screen debug text; the
+# DC side needs nothing else. `make -f Makefile.dc DEBUG_FEATURES=1` for the
+# debug build (also add it to the `assets` regen if dc_assets is run by hand).
+DEBUG_FEATURES ?= 0
+DEBUG_FLAGS := $(if $(filter 0,$(DEBUG_FEATURES)),-DDEBUG_FEATURES=0 -DNDEBUG,-DDEBUG_FEATURES=1)
+
 CFLAGS := -Os -flto -Wall -std=gnu23 -DLINUX -D_LANGUAGE_C -DOOT_VERSION=GC_EU_MQ_DBG \
     -DPLATFORM_GC=1 -DPLATFORM_N64=0 -DPLATFORM_IQUE=0 \
     -DOOT_REVISION=15 -DOOT_REGION=REGION_EU \
     -DLIBULTRA_VERSION=LIBULTRA_VERSION_L -DLIBULTRA_PATCH=0 \
     -DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG \
-    -DDEBUG_FEATURES=1 -DNON_MATCHING -DAVOID_UB -DMML_VERSION=MML_VERSION_OOT \
+    $(DEBUG_FLAGS) -DNON_MATCHING -DAVOID_UB -DMML_VERSION=MML_VERSION_OOT \
     -DBUILD_CREATOR='"zelda@srd022j"' -DBUILD_DATE='"03-02-21"' \
     -DBUILD_TIME='"00:16:31"' \
     -DREGION_JP=0 -DREGION_US=1 -DREGION_EU=2 -DREGION_NULL=255 \
@@ -400,8 +407,10 @@ ALL_OBJECTS := $(OBJECTS) $(OVERLAY_OBJECTS)
 
 all: $(TARGET)
 
+# Asset segments (DC ELFs/bins + vrom_table.h). Layout metadata comes from the ROM
+# via dc_meta; inputs from `make -f Makefile.dc extract`. Uses the venv interpreter.
 assets:
-	python3 pc_tools/dc_assets.py
+	DC_VERSION=$(DC_VERSION) $(PYTHON) pc_tools/dc_assets.py
 
 # AICA voice driver: regenerate the ADPCM pool (assets_dc/adpcm_pool.bin, loaded
 # at runtime) + sample table from the soundfont banks (timestamp-gated; only

@@ -21,33 +21,31 @@ if not shutil.which(CC):
 
 import sys
 
-# VERSION + MIPS-free mode. With DC_MIPS_FREE=1 (or --mips-free), every input that
-# was read from the N64/MIPS build (build/<v>/{.ld,.map,.elf,spec,.z64}) is instead
-# generated on the host by pc_tools/dc_meta.py -- no MIPS toolchain, any supported
-# ROM. The ROM (VROM) layout is recomputed from DC segment sizes (option A).
+# Every layout input (segment bases, VROM layout, audio symbols, spec) is generated
+# on the host by pc_tools/dc_meta.py from the ROM + spec/spec -- no MIPS toolchain,
+# any supported ROM. The VROM layout is recomputed from DC segment sizes (option A).
+# The extracted/<v> + build/<v> inputs come from pc_tools/dc_extract.py.
+# (The former mode that read build/<v>/{.ld,.map,.elf,.z64} from a MIPS build was
+# REMOVED 2026-09-03 and must not come back.)
 VERSION = os.environ.get("DC_VERSION", "gc-eu-mq-dbg")
-MIPS_FREE = os.environ.get("DC_MIPS_FREE") == "1" or "--mips-free" in sys.argv
+if "--version" in sys.argv:
+    VERSION = sys.argv[sys.argv.index("--version") + 1]
 
 EXTRACTED = f"extracted/{VERSION}"
 BUILD_DIR = "build_dc/assets"
 DATA_DIR = "assets_dc"
 
-_meta = None
-if MIPS_FREE:
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-    import dc_meta
-    print(f"[mips-free] generating metadata for {VERSION} (no MIPS build inputs)")
-    _meta = dc_meta.gather(VERSION)
-    SPEC_PATH = _meta["spec_path"]
-    _asset_defs = " ".join(dc_meta.cpp_defines(_meta["cfg"]))
-    CFLAGS = ("-c -g -O0 -fno-common -fno-toplevel-reorder -fno-zero-initialized-in-bss "
-              "-D_LANGUAGE_C -DLINUX -D__DREAMCAST__ -DASSET_BUILD "
-              "-DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG "
-              f"{_asset_defs} "
-              f"-Iinclude -Iextracted/{VERSION} -Ibuild_dc/meta -Ibuild/{VERSION} -I.")
-else:
-    SPEC_PATH = f"build/{VERSION}/spec"
-    CFLAGS = "-c -g -O0 -fno-common -fno-toplevel-reorder -fno-zero-initialized-in-bss -D_LANGUAGE_C -DOOT_VERSION=GC_EU_MQ_DBG -DLINUX -D__DREAMCAST__ -DASSET_BUILD -DPLATFORM_GC=1 -DPLATFORM_N64=0 -DPLATFORM_IQUE=0 -DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG -DDEBUG_FEATURES=1 -DNON_MATCHING -Iinclude -Iextracted/gc-eu-mq-dbg -Ibuild/gc-eu-mq-dbg -I."
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dc_meta
+print(f"generating layout metadata for {VERSION} from the ROM (dc_meta)")
+_meta = dc_meta.gather(VERSION)
+SPEC_PATH = _meta["spec_path"]
+_asset_defs = " ".join(dc_meta.cpp_defines(_meta["cfg"]))
+CFLAGS = ("-c -g -O0 -fno-common -fno-toplevel-reorder -fno-zero-initialized-in-bss "
+          "-D_LANGUAGE_C -DLINUX -D__DREAMCAST__ -DASSET_BUILD "
+          "-DF3DEX_GBI_2 -DF3DEX_GBI_PL -DGBI_DOWHILE -DGBI_DEBUG "
+          f"{_asset_defs} "
+          f"-Iinclude -Iextracted/{VERSION} -Ibuild_dc/meta -Ibuild/{VERSION} -I.")
 
 os.makedirs(BUILD_DIR, exist_ok=True)
 os.makedirs(DATA_DIR, exist_ok=True)
@@ -56,101 +54,53 @@ os.makedirs("src/dreamcast", exist_ok=True)
 print(f"=== Building Dreamcast assets ===\n")
 
 # =============================================================================
-# Parse linker script for segment bases
+# Segment bases (dc_meta: cpp spec | mkldscript)
 # =============================================================================
 segment_bases = {}
-if MIPS_FREE:
-    # dc_meta returns ints; downstream linker scripts want hex strings.
-    segment_bases = {k: hex(v) for k, v in _meta["segment_bases"].items()}
-else:
-    ld_path = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.ld'
-    if os.path.exists(ld_path):
-        with open(ld_path, 'r') as f:
-            for match in re.finditer(r'\.\.(\w+)\s+(0x[0-9A-Fa-f]+)\s*:', f.read()):
-                segment_bases[match.group(1)] = match.group(2)
+# dc_meta returns ints; downstream linker scripts want hex strings.
+segment_bases = {k: hex(v) for k, v in _meta["segment_bases"].items()}
 
 print(f"Found {len(segment_bases)} segment bases")
 
 # =============================================================================
-# Parse N64 map for ROM segment boundaries
+# VROM layout (option A, dc_meta) + D_ linker constants
 # =============================================================================
 rom_segments = {}
 all_segments_map = {}
 linker_symbols = {}
-if MIPS_FREE:
-    linker_symbols = dict(_meta["linker_symbols"])
+linker_symbols = dict(_meta["linker_symbols"])
 
-    # Option A: recompute the DC VROM layout cumulatively from DC segment sizes.
-    # gDmaDataTable (via _NAMESegmentRomStart/End) and gVromTable both come from
-    # this single layout, so DMA lookups stay consistent by construction. VRAM
-    # (non-rom) boundaries come from the fixed segment_bases (segment slots).
-    def optionA_maps(sizes):
-        # Segments dc_assets does not compile (makerom/boot/code/...) fall back to
-        # their baserom sizes so their VROM slots stay realistic; compiled asset
-        # segments (and audio) override with real DC sizes.
-        merged = dict(_meta["baserom_sizes"])
-        merged.update(sizes)
-        layout = dc_meta.compute_vrom_layout(
-            _meta["dma_order"], merged, _meta["romaligns"])
-        asm, rs = {}, {}
-        for name, (s, e) in layout.items():
-            asm[(name, True)] = {'Start': s, 'End': e}
-            rs[name] = {'Start': s, 'End': e}
-        for name, base in _meta["segment_bases"].items():
-            asm[(name, False)] = {'Start': base, 'End': base + sizes.get(name, 0)}
-        return asm, rs
+# Option A: recompute the DC VROM layout cumulatively from DC segment sizes.
+# gDmaDataTable (via _NAMESegmentRomStart/End) and gVromTable both come from
+# this single layout, so DMA lookups stay consistent by construction. VRAM
+# (non-rom) boundaries come from the fixed segment_bases (segment slots).
+def optionA_maps(sizes):
+    # Segments dc_assets does not compile (makerom/boot/code/...) fall back to
+    # their baserom sizes so their VROM slots stay realistic; compiled asset
+    # segments (and audio) override with real DC sizes.
+    merged = dict(_meta["baserom_sizes"])
+    merged.update(sizes)
+    layout = dc_meta.compute_vrom_layout(
+        _meta["dma_order"], merged, _meta["romaligns"])
+    asm, rs = {}, {}
+    for name, (s, e) in layout.items():
+        asm[(name, True)] = {'Start': s, 'End': e}
+        rs[name] = {'Start': s, 'End': e}
+    for name, base in _meta["segment_bases"].items():
+        asm[(name, False)] = {'Start': base, 'End': base + sizes.get(name, 0)}
+    return asm, rs
 
-    # Seed with zero sizes for the PHASE-3 pass (VROM values there are unused);
-    # refreshed with real DC sizes just before PHASE 6.
-    all_segments_map, rom_segments = optionA_maps({})
-else:
-    n64_map = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.map'
-    if os.path.exists(n64_map):
-        with open(n64_map, 'r') as f:
-            for line in f:
-                m = re.search(r'(0x[0-9a-fA-F]+)\s+_(\w+)SegmentRom(Start|End)\b', line)
-                if m:
-                    addr = int(m.group(1), 16)
-                    name = m.group(2)
-                    start_end = m.group(3)
-                    if name not in rom_segments:
-                        rom_segments[name] = {}
-                    rom_segments[name][start_end] = addr
-
-                m = re.search(r'(0x[0-9a-fA-F]+)\s+_(\w+)Segment(Rom)?(Start|End)\b', line)
-                if m:
-                    addr = int(m.group(1), 16)
-                    name = m.group(2)
-                    has_rom = m.group(3) is not None
-                    start_end = m.group(4)
-                    key = (name, has_rom)
-                    if key not in all_segments_map:
-                        all_segments_map[key] = {}
-                    all_segments_map[key][start_end] = addr
-
-                m = re.match(r'\s+(0x[0-9a-fA-F]+)\s+(D_[0-9A-Fa-f]+)\s*=', line)
-                if m:
-                    linker_symbols[m.group(2)] = int(m.group(1), 16)
+# Seed with zero sizes for the PHASE-3 pass (VROM values there are unused);
+# refreshed with real DC sizes just before PHASE 6.
+all_segments_map, rom_segments = optionA_maps({})
 
 print(f"Found {len(rom_segments)} ROM segments")
 
 # =============================================================================
-# Parse audio sub-segment symbols from N64 ELF
+# Audio sub-segment symbols (dc_meta: audio_tables.json + ROM sequence table)
 # =============================================================================
 audio_symbols = {}
-if MIPS_FREE:
-    audio_symbols = dict(_meta["audio_symbols"])
-else:
-    n64_elf = 'build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.elf'
-    if os.path.exists(n64_elf):
-        r = subprocess.run(f"nm {n64_elf}", shell=True, capture_output=True, text=True)
-        if r.returncode == 0:
-            for line in r.stdout.split('\n'):
-                m = re.match(r'([0-9a-fA-F]+)\s+[AT]\s+((Sequence|Soundfont|SampleBank)_\d+_(Start|Size))$', line)
-                if m:
-                    addr = int(m.group(1), 16)
-                    sym_name = m.group(2)
-                    audio_symbols[sym_name] = addr
+audio_symbols = dict(_meta["audio_symbols"])
 
 print(f"Found {len(audio_symbols)} audio sub-segment symbols")
 
@@ -482,10 +432,9 @@ print(f"\nBuilt {success}/{len(segments)} segments")
 # =============================================================================
 print("\n=== Regenerating segments.elf with DC sizes ===")
 
-if MIPS_FREE:
-    # Recompute the canonical option-A VROM layout now that we know DC sizes.
-    # segments.elf (below) and vrom_table.h (PHASE 8) both read these globals.
-    all_segments_map, rom_segments = optionA_maps(built_segments)
+# Recompute the canonical option-A VROM layout now that we know DC sizes.
+# segments.elf (below) and vrom_table.h (PHASE 8) both read these globals.
+all_segments_map, rom_segments = optionA_maps(built_segments)
 
 if generate_segments_elf(built_segments):
     print(f"Regenerated segments.elf with {len(built_segments)} DC-sized segments")
@@ -636,47 +585,20 @@ print(f"Generated src/dreamcast/vrom_table.h with {len(entries)} entries")
 # =============================================================================
 print("\n=== Extracting audio segments from ROM ===")
 
-if MIPS_FREE:
-    # MIPS-free: read the audio blobs straight from the decompressed baserom, at
-    # the baserom's own dmadata offsets (dc_meta.audio_blobs). Our audio symbols
-    # (Soundfont_N/Sequence_N/...) are also derived from that same baserom, so the
-    # .bin data and the sub-segment offsets are self-consistent. (The option-A
-    # rom_segments VROM values are the DC layout, NOT baserom offsets, so they
-    # must NOT be used to seek the baserom.)
-    BASEROM = f"baseroms/{VERSION}/baserom-decompressed.z64"
-    audio_segments = dict(_meta["audio_blobs"])
-    if os.path.exists(BASEROM):
-        audio_rom = BASEROM
-        print(f"  Using baserom: {BASEROM}")
-    else:
-        audio_rom = None
-        print(f"  WARNING: {BASEROM} not found, skipping audio extraction")
+# MIPS-free: read the audio blobs straight from the decompressed baserom, at
+# the baserom's own dmadata offsets (dc_meta.audio_blobs). Our audio symbols
+# (Soundfont_N/Sequence_N/...) are also derived from that same baserom, so the
+# .bin data and the sub-segment offsets are self-consistent. (The option-A
+# rom_segments VROM values are the DC layout, NOT baserom offsets, so they
+# must NOT be used to seek the baserom.)
+BASEROM = f"baseroms/{VERSION}/baserom-decompressed.z64"
+audio_segments = dict(_meta["audio_blobs"])
+if os.path.exists(BASEROM):
+    audio_rom = BASEROM
+    print(f"  Using baserom: {BASEROM}")
 else:
-    # IMPORTANT: Extract from the BUILT ROM, not the baserom. The decomp build may produce
-    # slightly different Audiobank/Audioseq/Audiotable layouts (e.g. different soundfont
-    # sub-segment padding). Since our linker symbols (Soundfont_N_Start, etc.) come from
-    # the built ROM's map file, the .bin data must also come from the built ROM to match.
-    BUILT_ROM = "build/gc-eu-mq-dbg/oot-gc-eu-mq-dbg.z64"
-    BASEROM = "baseroms/gc-eu-mq-dbg/baserom-decompressed.z64"
-
-    audio_segments = {}
-    for name, addrs in rom_segments.items():
-        if name in ('Audiobank', 'Audioseq', 'Audiotable'):
-            if 'Start' in addrs and 'End' in addrs:
-                audio_segments[name] = (addrs['Start'], addrs['End'])
-
-    # Prefer built ROM since linker symbols match it; fall back to baserom
-    if os.path.exists(BUILT_ROM):
-        audio_rom = BUILT_ROM
-        print(f"  Using built ROM: {BUILT_ROM}")
-    elif os.path.exists(BASEROM):
-        audio_rom = BASEROM
-        print(f"  WARNING: Built ROM not found, falling back to baserom: {BASEROM}")
-        print(f"  Audio data may not match linker symbols if decomp build differs from baserom")
-    else:
-        audio_rom = None
-        print(f"  WARNING: Neither {BUILT_ROM} nor {BASEROM} found, skipping audio extraction")
-        print(f"  Audio .bin files must be manually placed in {DATA_DIR}/")
+    audio_rom = None
+    print(f"  WARNING: {BASEROM} not found, skipping audio extraction")
 
 if audio_rom and not audio_segments:
     print(f"  WARNING: No audio segment ROM addresses found in map file")
