@@ -2682,6 +2682,20 @@ void Actor_DrawLensOverlay(GraphicsContext* gfxCtx) {
     CLOSE_DISPS(gfxCtx, "../z_actor.c", 6183);
 }
 
+#ifdef __DREAMCAST__
+/* DC: bracket the lens-actor draws for the renderer. The DC renderer masks
+   ONLY this geometry with a circle modifier volume (the N64's prim-depth mask
+   cannot be expressed on PVR without collateral damage). 'BLND' custom DL op,
+   sub-ops 'LNS1'/'LNS0'; interpreter side in src/dreamcast/main.c. */
+#define gDCLensBracket(pkt, subop) \
+    {                              \
+        Gfx* _g = (pkt);           \
+        _g->words.w0 = 0x424C4E44; \
+        _g->words.w1 = (subop);    \
+    }                              \
+    (void)0
+#endif
+
 void Actor_DrawLensActors(PlayState* play, s32 numInvisibleActors, Actor** invisibleActors) {
     Actor** invisibleActor;
     GraphicsContext* gfxCtx;
@@ -2735,12 +2749,28 @@ void Actor_DrawLensActors(PlayState* play, s32 numInvisibleActors, Actor** invis
                   T("魔法のメガネ 見えないＡcｔｏｒ表示 START", "Magic lens invisible Actor display START"),
                   numInvisibleActors);
 
+#ifdef __DREAMCAST__
+    {
+        static u32 sDcLensDrawLog = 0;
+        if (sDcLensDrawLog < 16) {
+            sDcLensDrawLog++;
+            printf("LENS: game draw %d lens actors, mode=%d\n",
+                   (int)numInvisibleActors, (int)play->roomCtx.curRoom.lensMode);
+        }
+    }
+    gDCLensBracket(POLY_XLU_DISP++, 0x4C4E5331); /* 'LNS1' */
+#endif
+
     invisibleActor = &invisibleActors[0];
     for (i = 0; i < numInvisibleActors; i++) {
         gDPNoOpString(POLY_OPA_DISP++, T("魔法のメガネ 見えないＡcｔｏｒ表示", "Magic lens invisible Actor display"),
                       i);
         Actor_Draw(play, *(invisibleActor++));
     }
+
+#ifdef __DREAMCAST__
+    gDCLensBracket(POLY_XLU_DISP++, 0x4C4E5330); /* 'LNS0' */
+#endif
 
     gDPNoOpString(POLY_OPA_DISP++,
                   T("魔法のメガネ 見えないＡcｔｏｒ表示 END", "Magic lens invisible Actor display END"),

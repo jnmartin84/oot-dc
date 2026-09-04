@@ -524,6 +524,7 @@ static int sPtBuffering   = 0;  /* 1 = currently buffering for PT instead of sub
 typedef struct {
     int start, count;
     pvr_poly_hdr_t hdr;  /* compiled header for this batch */
+    int is_mod;          /* lens bracket: 1 = textured modifier batch, 2 = untextured */
 } TrBatch;
 
 #define MAX_TR_VERTS   6144
@@ -533,6 +534,27 @@ static TrBatch  sTrBatches[MAX_TR_BATCHES];
 static int sTrVertCount   = 0;
 static int sTrBatchCount  = 0;
 static int sTrBuffering    = 0;  /* 1 = buffering blended geometry for deferred TR */
+
+/* ---- Lens of Truth state (see the lens block before draw_texrect) ----
+   The mask texrect arms the circle; 'BLND'/'LNS1'..'LNS0' DL sentinels
+   (emitted by Actor_DrawLensActors) bracket the lens-actor draws. Bracketed
+   geometry is forced onto the deferred TR buffer with MODIFIER-affected
+   headers (param set 2 = hidden); a screen-space circle volume on the TR_MOD
+   list then masks ONLY that geometry, per pixel -- world geometry, the PT
+   cutouts and the multitex passes are untouched (the earlier depth-prime
+   approach poisoned the shared depth buffer for the whole PT/TR phase). */
+static pvr_ptr_t sLensVisTexPvr = NULL;   /* baked visible window (shroud/glasses) */
+static u32 sLensVisSrc = 0;               /* texAddr the bake came from */
+/* bake staging borrows sTexDataBuf (idle at texrect time) -- RAM is too tight
+   for a dedicated 32KB buffer (newlib Balloc abort at the title screen, 2026-09-04) */
+static u32 sLensLog = 0;                  /* capped diagnostics */
+static u32 sPrimDepthZ = 0xFFFF;          /* last G_SETPRIMDEPTH z (0 = nearest) */
+static float sLensRadTex = 60.0f;         /* circle radius in window texels (measured at bake) */
+static int sLensBracket = 0;              /* inside the LNS1..LNS0 actor bracket */
+static int sLensMaskSeen = 0;             /* a lens mask texrect armed this frame */
+static int sLensShow = 0;                 /* 1 = SHOW_ACTORS polarity (visible INSIDE circle) */
+static int sLensVolNeeded = 0;            /* emit the TR_MOD circle volume this frame */
+static float sLensCx, sLensCy, sLensRx, sLensRy;  /* circle in screen coords */
 
 static void pvr_rebuild_col_header(void);
 static void pvr_rebuild_tex_header(TextureCacheEntry* entry);
@@ -2331,6 +2353,51 @@ static void tr_start_batch(void) {
     TrBatch* b = &sTrBatches[sTrBatchCount++];
     b->start = sTrVertCount;
     b->count = 0;
+    b->is_mod = 0;
+
+    if (sLensBracket) {
+        /* Lens bracket: compile a modifier-affected header; param set 2
+           (inside the TR_MOD circle volume) is written at flush time. */
+        pvr_poly_cxt_t cxt;
+        if ((sCurrentboundTexture != NULL) && (sCurrentboundTexture->id != 0)) {
+            TexHandle texID = sCurrentboundTexture->id;
+            int tw = sCurrentboundTexture->pow2Info.padded_w;
+            int th = sCurrentboundTexture->pow2Info.padded_h;
+            u32 pfmt = pvr_tex_fmt_for(sCurrentboundTexture->fmt, sCurrentboundTexture->siz);
+            pvr_poly_cxt_txr_mod(&cxt, PVR_LIST_TR_POLY,
+                                 pfmt, tw, th, texID, pvr_tex_filter(),
+                                 pfmt, tw, th, texID, pvr_tex_filter());
+            cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
+            cxt.txr2.env = PVR_TXRENV_MODULATEALPHA;
+            {
+                u32 cms = sTiles[0].cms, cmt = sTiles[0].cmt;
+                int uvc = 0, uvf = 0;
+                if (cms & 2) uvc |= PVR_UVCLAMP_U;
+                if (cmt & 2) uvc |= PVR_UVCLAMP_V;
+                if (cms & 1) uvf |= PVR_UVFLIP_U;
+                if (cmt & 1) uvf |= PVR_UVFLIP_V;
+                cxt.txr.uv_clamp = uvc;  cxt.txr.uv_flip = uvf;
+                cxt.txr2.uv_clamp = uvc; cxt.txr2.uv_flip = uvf;
+            }
+            cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
+            cxt.txr2.alpha = PVR_TXRALPHA_ENABLE;
+            b->is_mod = 1;
+        } else {
+            pvr_poly_cxt_col_mod(&cxt, PVR_LIST_TR_POLY);
+            b->is_mod = 2;
+        }
+        cxt.gen.specular = 1;
+        cxt.gen.fog_type = ((sGeometryMode & G_FOG) && !sDoAdd && !sDamageFlash) ? PVR_FOG_VERTEX : PVR_FOG_DISABLE;
+        cxt.gen.culling = pvr_cull_mode();
+        cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
+        cxt.depth.comparison = sDepthTestEnabled ? PVR_DEPTHCMP_GEQUAL : PVR_DEPTHCMP_ALWAYS;
+        cxt.depth.write = sDepthWriteEnabled ? PVR_DEPTHWRITE_ENABLE : PVR_DEPTHWRITE_DISABLE;
+        cxt.blend.src = PVR_BLEND_SRCALPHA;   cxt.blend.dst = PVR_BLEND_INVSRCALPHA;
+        cxt.blend.src2 = PVR_BLEND_SRCALPHA;  cxt.blend.dst2 = PVR_BLEND_INVSRCALPHA;
+        pvr_poly_mod_compile(&b->hdr, &cxt);
+        sLensVolNeeded = 1;
+        return;
+    }
 
     if ((sCurrentboundTexture != NULL) && (sCurrentboundTexture->id != 0)) {
         TexHandle texID = sCurrentboundTexture->id;
@@ -2400,6 +2467,41 @@ static void flush_deferred_tr(void) {
         for (int i = batch->start; i < batch->start + batch->count; i += 3) {
             for (int j = 0; j < 3 && (i + j) < batch->start + batch->count; j++) {
                 MtxVert* mv = &sTrVerts[i + j];
+                if (batch->is_mod) {
+                    /* Two-parameter (modifier-affected) vertex. Param 1 = outside
+                       the circle volume, param 2 = inside. SHOW rooms are visible
+                       inside; HIDE rooms are visible outside. */
+                    u32 a_vis = mv->argb;
+                    u32 a_hid = mv->argb & 0x00FFFFFFu;
+                    u32 argb_out = sLensShow ? a_hid : a_vis;
+                    u32 argb_in  = sLensShow ? a_vis : a_hid;
+                    if (batch->is_mod == 1) {
+                        pvr_vertex_tpcm_t *vt = (pvr_vertex_tpcm_t *)pvr_dr_target(sDrState);
+                        vt->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+                        vt->x = mv->x; vt->y = mv->y; vt->z = mv->z;
+                        if (mv->z > max_z) max_z = mv->z;
+                        vt->u0 = mv->u; vt->v0 = mv->v;
+                        vt->argb0 = argb_out; vt->oargb0 = mv->oargb;
+                        pvr_dr_commit(vt);
+                        uint32_t *w = (uint32_t *)pvr_dr_target(sDrState);
+                        ((float *)w)[0] = mv->u;   /* u1 */
+                        ((float *)w)[1] = mv->v;   /* v1 */
+                        w[2] = argb_in;            /* argb1 */
+                        w[3] = mv->oargb;          /* oargb1 */
+                        w[4] = w[5] = w[6] = w[7] = 0;
+                        pvr_dr_commit(w);
+                    } else {
+                        pvr_vertex_pcm_t *vc = (pvr_vertex_pcm_t *)pvr_dr_target(sDrState);
+                        vc->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+                        vc->x = mv->x; vc->y = mv->y; vc->z = mv->z;
+                        if (mv->z > max_z) max_z = mv->z;
+                        vc->argb0 = argb_out;
+                        vc->argb1 = argb_in;
+                        vc->d1 = vc->d2 = 0;
+                        pvr_dr_commit(vc);
+                    }
+                    continue;
+                }
                 pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                 vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
                 vert->x = mv->x;
@@ -2700,6 +2802,99 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
 }
 #endif
 
+/* ==== Lens of Truth (modifier-volume masking) ================================
+   N64 mechanism (z_actor.c Actor_DrawLensActors): a FULL-SCREEN texrect with
+   G_ZS_PRIM + SetPrimDepth(0,0). Texture: the I8 64x64 circle quadrant,
+   MIRRORed into a 128x128 window at the tile's uls/ult; beyond the window the
+   N64 tile CLAMP holds the opaque outer texel (74). Where the combined alpha
+   passes, the rect writes NEAREST depth (Z_UPD), z-rejecting later z-tested
+   draws. SHOW_ACTORS rooms: alpha = TEXEL0 (mask OUTSIDE the circle) + the
+   same rect draws the red shroud; HIDE rooms: depth-only, inverted alpha
+   (74 - TEXEL0, mask INSIDE), and a later Z-less texrect draws the tint.
+   DC: a depth-write mask cannot work on PVR -- the hardware depth-tests the
+   ENTIRE PT+TR phases against it (world cutouts, blended world and the
+   multitex ground pass all vanished in the masked region on HW). Instead the
+   mask texrect only ARMS the circle (position/radius/polarity); the
+   'LNS1'..'LNS0' sentinels around the lens-actor draws route that geometry --
+   and only it -- through modifier-affected TR batches, and a circle modifier
+   volume on TR_MOD flips them to their hidden parameter set per pixel. The
+   visible shroud/glasses pass is drawn here from a baked pre-mirrored 128x128
+   window texture with true texel-space UVs (PVR clamp = N64 tile clamp),
+   because the generic 2D path cannot express mirror+clamp.
+   The asset is compiled as u64 words -> on little-endian SH4 each 8-byte
+   group is byte-reversed; the bake reads offset^7 (swap_bytes_64 equivalent). */
+
+static pvr_ptr_t lens_visible_tex(u32 texAddr) {
+    if (sLensVisTexPvr != NULL && sLensVisSrc == texAddr)
+        return sLensVisTexPvr;
+    const u8* src = (const u8*)pc_resolve_addr(texAddr);
+    if (src == NULL)
+        return NULL;
+    for (int y = 0; y < 128; y++) {
+        int sy = (y < 64) ? y : 127 - y;
+        u16* drow = &sTexDataBuf[y * 128];
+        for (int x = 0; x < 128; x++) {
+            int sx = (x < 64) ? x : 127 - x;
+            u8 I = src[(sy * 64 + sx) ^ 7];
+            u16 n = I >> 4;                    /* intensity+alpha, modulated by prim */
+            drow[x] = (n << 12) | (n << 8) | (n << 4) | n;
+        }
+    }
+    /* Measure the circle radius for the modifier volume: on the window's
+       center row (source y=63, the row nearest the mirror seam), walk from the
+       seam (x=63) outward and count how far the inside (I < 74) extends. */
+    {
+        int r = 0;
+        for (int x = 63; x >= 0; x--) {
+            u8 I = src[(63 * 64 + x) ^ 7];
+            if (I < 74) r = 64 - x;
+        }
+        if (r > 2) sLensRadTex = (float)r;
+    }
+    if (sLensVisTexPvr == NULL)
+        sLensVisTexPvr = pvr_mem_malloc(128 * 128 * 2);
+    if (sLensVisTexPvr == NULL) {
+        if (sLensLog < 8) { sLensLog++; printf("LENS: visible tex VRAM OOM\n"); }
+        return NULL;
+    }
+    pvr_txr_load_ex(sTexDataBuf, sLensVisTexPvr, 128, 128, PVR_TXRLOAD_16BPP);
+    sLensVisSrc = texAddr;
+    return sLensVisTexPvr;
+}
+
+/* The visible half of the lens overlay (red shroud in SHOW rooms, the tint in
+   HIDE rooms): the baked window texture modulated by the combiner colour,
+   drawn live like a normal 2D texrect. */
+static void lens_draw_visible(float x0, float y0, float x1, float y1,
+                              float lu0, float lv0, float lu1, float lv1,
+                              u32 argb, u32 texAddr) {
+    pvr_ptr_t tex = lens_visible_tex(texAddr);
+    if (tex == NULL)
+        return;
+    pvr_poly_cxt_t cxt;
+    pvr_poly_cxt_txr(&cxt, sPvrCurrentList, PVR_TXRFMT_ARGB4444, 128, 128, tex, pvr_tex_filter());
+    cxt.gen.culling      = PVR_CULLING_NONE;
+    cxt.gen.clip_mode    = PVR_USERCLIP_INSIDE;
+    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
+    cxt.depth.write      = PVR_DEPTHWRITE_DISABLE;   /* CLD_SURF never writes Z */
+    cxt.blend.src        = PVR_BLEND_SRCALPHA;
+    cxt.blend.dst        = PVR_BLEND_INVSRCALPHA;
+    cxt.txr.env          = PVR_TXRENV_MODULATEALPHA;
+    cxt.txr.alpha        = PVR_TXRALPHA_ENABLE;
+    cxt.txr.uv_clamp     = PVR_UVCLAMP_U | PVR_UVCLAMP_V;
+    pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
+    pvr_poly_compile(&hdr, &cxt);
+    SHZ_PREFETCH(&hdr);
+    shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
+    sPvrFrameBytes += 32;
+    s2DDepth += OVERLAY_Z_STEP;
+    pvr_submit_quad_tex(x0, y0, x1, y1, s2DDepth * 1e6f, lu0, lv0, lu1, lv1, argb, 0);
+    if (sLensLog < 24) {
+        sLensLog++;
+        printf("LENS: visible (%d,%d)-(%d,%d) argb=%08lx\n",
+               (int)x0, (int)y0, (int)x1, (int)y1, (unsigned long)argb);
+    }
+}
 
 static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
     PROF_BEGIN(sPF_Draw2D);
@@ -3051,6 +3246,46 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
     u8 cb = (u8)(cc_out[2] * 255.0f);
     u8 ca = (u8)(cc_out[3] * 255.0f);
     u32 argb = (ca << 24) | (cr << 16) | (cg << 8) | cb;
+
+    /* Lens of Truth passes: prim-depth 0 + G_ZS_PRIM on a mirrored I8 texrect.
+       Z_UPD variants ARM the circle modifier volume (+ draw the red shroud in
+       SHOW rooms); the Z-less variant is the HIDE rooms' tint overlay. Drawn
+       here with the baked 128x128 window texture and true texel-space UVs
+       (PVR clamp = N64 tile clamp). */
+    if ((sOtherModeL & G_ZS_PRIM) && sPrimDepthZ == 0 &&
+        sTiles[tile].fmt == G_IM_FMT_I && sTiles[tile].siz == G_IM_SIZ_8b &&
+        (sTiles[tile].cms & 1) && sTiles[tile].masks == 6) {
+        float lu0 = (s0_raw - uls_pix) * (1.0f / 128.0f);
+        float lu1 = (s1_raw - uls_pix) * (1.0f / 128.0f);
+        float lv0 = (t0_raw - ult_pix) * (1.0f / 128.0f);
+        float lv1 = (t1_raw - ult_pix) * (1.0f / 128.0f);
+        if (sOtherModeL & Z_UPD) {
+            int preserves_color = (((sOtherModeL >> 26) & 3) == G_BL_0) &&
+                                  (((sOtherModeL >> 22) & 3) == G_BL_CLR_MEM);
+            /* Arm the circle for the modifier volume: screen position of the
+               128-texel window from the UV mapping, radius from the bake. */
+            if (lens_visible_tex(sTiles[tile].texAddr) != NULL && lu1 != lu0 && lv1 != lv0) {
+                float wx0 = x0 + (0.0f - lu0) * (x1 - x0) / (lu1 - lu0);
+                float wx1 = x0 + (1.0f - lu0) * (x1 - x0) / (lu1 - lu0);
+                float wy0 = y0 + (0.0f - lv0) * (y1 - y0) / (lv1 - lv0);
+                float wy1 = y0 + (1.0f - lv0) * (y1 - y0) / (lv1 - lv0);
+                sLensCx = 0.5f * (wx0 + wx1);
+                sLensCy = 0.5f * (wy0 + wy1);
+                sLensRx = (wx1 - wx0) * (sLensRadTex / 128.0f);
+                sLensRy = (wy1 - wy0) * (sLensRadTex / 128.0f);
+                sLensShow = !preserves_color;
+                sLensMaskSeen = 1;
+            }
+            if (preserves_color) {   /* depth-only on N64: nothing visible here */
+                sPvrNeedHeader = 1;
+                PROF_END(sPF_Draw2D);
+                return;
+            }
+        }
+        lens_draw_visible(x0, y0, x1, y1, lu0, lv0, lu1, lv1, argb, sTiles[tile].texAddr);
+        PROF_END(sPF_Draw2D);
+        return;
+    }
 
     /* Build one-off textured header for 2D overlay.
        Each texrect gets an incrementing Z (s2DDepth) so PVR's
@@ -3954,6 +4189,11 @@ static void handle_setcombine(u32 w0, u32 w1) {
         sPtBuffering = 0;
         if (sTrBuffering) { sTrBuffering = 0; sPvrNeedHeader = 1; }
     }
+    if (sLensBracket) {
+        /* Lens bracket: everything rides the deferred TR buffer as modifier-affected */
+        sPtBuffering = 0;
+        if (!sTrBuffering) { flush_triangles(); sTrBuffering = 1; sPvrNeedHeader = 1; }
+    }
 }
 
 static void handle_othermode_apply_alpha(void) {
@@ -3990,6 +4230,11 @@ static void handle_othermode_apply_alpha(void) {
     } else {
         sPtBuffering = 0;
         if (sTrBuffering) { sTrBuffering = 0; sPvrNeedHeader = 1; }
+    }
+    if (sLensBracket) {
+        /* Lens bracket: everything rides the deferred TR buffer as modifier-affected */
+        sPtBuffering = 0;
+        if (!sTrBuffering) { flush_triangles(); sTrBuffering = 1; sPvrNeedHeader = 1; }
     }
 }
 
@@ -4519,6 +4764,35 @@ static void walk_dl(Gfx* dl, int depth) {
                 sPvrColDirty = 1;
                 sPvrTexDirty = 1;
                 sPvrNeedHeader = 1;
+            } else if (w1 == 0x4C4E5331u) {
+                /* 'LNS1': lens-actor bracket begin (only if a mask armed the circle) */
+                if (sLensLog < 40) { sLensLog++; printf("LENS: LNS1 mask=%d\n", sLensMaskSeen); }
+                if (sLensMaskSeen) {
+                    flush_triangles();
+                    sPtBuffering = 0;
+                    sTrBuffering = 1;
+                    sLensBracket = 1;
+                    sPvrNeedHeader = 1;
+                }
+            } else if (w1 == 0x4C4E5330u) {
+                /* 'LNS0': lens-actor bracket end */
+                if (sLensBracket) {
+                    flush_triangles();
+                    sLensBracket = 0;
+                    sPvrNeedHeader = 1;
+                }
+                if (sLensLog < 40) {
+                    int modb = 0, modv = 0;
+                    for (int bi = 0; bi < sTrBatchCount; bi++)
+                        if (sTrBatches[bi].is_mod) {
+                            modb++;
+                            modv += (sTrBatches[bi].count > 0) ? sTrBatches[bi].count
+                                                              : (sTrVertCount - sTrBatches[bi].start);
+                        }
+                    sLensLog++;
+                    printf("LENS: LNS0 mod_batches=%d mod_verts=%d trv=%d show=%d\n",
+                           modb, modv, sTrVertCount, sLensShow);
+                }
             }
             continue;
         }
@@ -4784,6 +5058,10 @@ static void walk_dl(Gfx* dl, int depth) {
             case G_LOADBLOCK:
                 TIMED(sWalkTexNs, handle_loadblock(w0, w1));
                 break;
+            case G_SETPRIMDEPTH:
+                /* tracked for the Lens of Truth depth-mask texrect (0 = nearest) */
+                sPrimDepthZ = (w1 >> 16) & 0xFFFF;
+                break;
         }
 
         __builtin_prefetch((void*)&dl[i] + 32);
@@ -4828,6 +5106,9 @@ void pc_process_displaylist(Gfx* dl) {
     s2DDepth = OVERLAY_Z_START;
     sMultiTexVertCount = 0;
     sMultiTexBatchCount = 0;
+    sLensBracket = 0;
+    sLensMaskSeen = 0;
+    sLensVolNeeded = 0;
     sPtVertCount = 0;
     sPtBatchCount = 0;
     sPtBuffering = 0;
@@ -4879,6 +5160,69 @@ void pc_process_displaylist(Gfx* dl) {
         flush_pt_buffer();
     }
     pvr_list_finish();
+
+    /* Lens of Truth: circle modifier volume. Affects only the modifier-flagged
+       (bracketed lens-actor) TR geometry. Two screen-parallel triangle-fan caps
+       over the circle; the prism side walls are degenerate in screen space and
+       contribute no spans. */
+    if (sLensVolNeeded) {
+        #define LENS_VOL_SEGS 24
+        static pvr_mod_hdr_t __attribute__((aligned(32))) mh_other, mh_last;
+        static pvr_modifier_vol_t __attribute__((aligned(32))) mtri;
+        /* Circle volume as a STRIP triangulation of the 24-gon: the classic
+           strip vertex order 0, 1, N-1, 2, N-2, ... taken as consecutive
+           triples. The fan (all triangles sharing one anchor) only ever
+           registered a wedge of the circle on HW; whether that was triangle
+           order or per-tile modifier-bin pressure is unproven -- the strip
+           changes both. Every triangle carries its own header (KOS-example
+           pattern); the last closes the inclusion volume. */
+        float px[LENS_VOL_SEGS], py[LENS_VOL_SEGS];
+        int seq[LENS_VOL_SEGS];
+        {
+            const float c = 0.9659258f, sn = 0.2588190f;   /* cos/sin(2*pi/24) */
+            float dx = 1.0f, dy = 0.0f;
+            for (int i = 0; i < LENS_VOL_SEGS; i++) {
+                px[i] = sLensCx + sLensRx * dx;
+                py[i] = sLensCy + sLensRy * dy;
+                float ndx = dx * c - dy * sn;
+                dy = dx * sn + dy * c;
+                dx = ndx;
+            }
+            int lo = 0, hi = LENS_VOL_SEGS;
+            for (int i = 0; i < LENS_VOL_SEGS; i++)
+                seq[i] = (i & 1) ? --hi : lo++;
+            /* seq = 0, 23, 1, 22, 2, ... : consecutive triples tile the polygon */
+        }
+        pvr_list_begin(PVR_LIST_TR_MOD);
+        pvr_dr_init(&sDrState);
+        pvr_mod_compile(&mh_other, PVR_LIST_TR_MOD, PVR_MODIFIER_OTHER_POLY, PVR_CULLING_NONE);
+        pvr_mod_compile(&mh_last, PVR_LIST_TR_MOD, PVR_MODIFIER_INCLUDE_LAST_POLY, PVR_CULLING_NONE);
+        mtri.flags = PVR_CMD_VERTEX_EOL;
+        mtri.d1 = mtri.d2 = mtri.d3 = mtri.d4 = mtri.d5 = mtri.d6 = 0;
+        for (int t = 0; t < LENS_VOL_SEGS - 2; t++) {
+            /* HW finding (fan + strip builds): only the triangle paired with
+               the INCLUDE_LAST_POLY header ever registers -- plain OTHER_POLY
+               triangles are inert. So close every triangle as its own
+               one-triangle volume; the strip triangles do not overlap, so the
+               union of the volumes is the polygon. */
+            pvr_mod_hdr_t* mh = &mh_last;
+            SHZ_PREFETCH(mh);
+            shz_sq_memcpy32_1(pvr_dr_target(sDrState), mh);
+            mtri.ax = px[seq[t]];     mtri.ay = py[seq[t]];     mtri.az = 8.0e8f;
+            mtri.bx = px[seq[t + 1]]; mtri.by = py[seq[t + 1]]; mtri.bz = 8.0e8f;
+            mtri.cx = px[seq[t + 2]]; mtri.cy = py[seq[t + 2]]; mtri.cz = 8.0e8f;
+            uint32_t *w = (uint32_t *)pvr_dr_target(sDrState);
+            memcpy(w, &mtri, 32); pvr_dr_commit(w);
+            w = (uint32_t *)pvr_dr_target(sDrState);
+            memcpy(w, ((const u8*)&mtri) + 32, 32); pvr_dr_commit(w);
+        }
+                pvr_list_finish();
+        if (sLensLog < 24) {
+            sLensLog++;
+            printf("LENS: volume c=(%d,%d) r=(%d,%d) show=%d\n",
+                   (int)sLensCx, (int)sLensCy, (int)sLensRx, (int)sLensRy, sLensShow);
+        }
+    }
 
     uint64 _tFlush1 = timer_ns_gettime64();
     sFrameFlushNs += _tFlush1 - _tWalk1;   /* list-finalize + TR/PT flushes (CPU submit) */
@@ -4971,7 +5315,8 @@ int main(int argc, char** argv) {
     }
 #endif
     pvr_init_params_t pvr_params = {
-        { PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32 },
+        /* TR_MOD (index 3) enabled for the Lens of Truth circle modifier volume */
+        { PVR_BINSIZE_32, PVR_BINSIZE_0, PVR_BINSIZE_32, PVR_BINSIZE_16, PVR_BINSIZE_32 },
         1024 * 1024, 1, 0, 0, 6
     };
     pvr_init(&pvr_params);

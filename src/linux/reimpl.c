@@ -675,8 +675,9 @@ void PC_UpdateInput(void) {
         state = (cont_state_t *)maple_dev_status(cont);
         if (state) {
             u32 btn = state->buttons;
-//            int b_held = btn & CONT_B;
-
+#if DEBUG_FEATURES
+            int b_held = btn & CONT_B;
+#endif
             // Face buttons
             if (btn & CONT_A)     buttons |= BTN_A;
             if (btn & CONT_X)     buttons |= BTN_B;
@@ -688,18 +689,21 @@ void PC_UpdateInput(void) {
             if (state->rtrig > 0x7f) buttons |= BTN_R;
 
             // D-Pad: B held = C-buttons, otherwise D-pad
-//            if (b_held) {
+#if DEBUG_FEATURES
+            if (b_held) {
+#endif
                 if (btn & CONT_DPAD_UP)    buttons |= BTN_CUP;
                 if (btn & CONT_DPAD_DOWN)  buttons |= BTN_CDOWN;
                 if (btn & CONT_DPAD_LEFT)  buttons |= BTN_CLEFT;
                 if (btn & CONT_DPAD_RIGHT) buttons |= BTN_CRIGHT;
-//            } else {
-//                if (btn & CONT_DPAD_UP)    buttons |= BTN_DUP;
-//                if (btn & CONT_DPAD_DOWN)  buttons |= BTN_DDOWN;
-//                if (btn & CONT_DPAD_LEFT)  buttons |= BTN_DLEFT;
-//                if (btn & CONT_DPAD_RIGHT) buttons |= BTN_DRIGHT;
-//            }
-
+#if DEBUG_FEATURES
+            } else {
+                if (btn & CONT_DPAD_UP)    buttons |= BTN_DUP;
+                if (btn & CONT_DPAD_DOWN)  buttons |= BTN_DDOWN;
+                if (btn & CONT_DPAD_LEFT)  buttons |= BTN_DLEFT;
+                if (btn & CONT_DPAD_RIGHT) buttons |= BTN_DRIGHT;
+            }
+#endif
             // Analog Stick
             stick_x = state->joyx * 91 / 128;
             stick_y = -(state->joyy * 91 / 128);
