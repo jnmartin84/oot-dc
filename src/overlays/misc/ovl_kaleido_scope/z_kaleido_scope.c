@@ -1138,6 +1138,9 @@ void KaleidoScope_HandlePageToggles(PauseContext* pauseCtx, Input* input) {
     }
 }
 
+#ifdef __DREAMCAST__
+void KaleidoScope_UpdateCursorVtx(PlayState* play);
+#endif
 void KaleidoScope_DrawCursor(PlayState* play, u16 pageIndex) {
     PauseContext* pauseCtx = &play->pauseCtx;
     s32 pad;
@@ -1164,6 +1167,15 @@ void KaleidoScope_DrawCursor(PlayState* play, u16 pageIndex) {
                             sCursorColors[pauseCtx->cursorColorSet >> 2][1],
                             sCursorColors[pauseCtx->cursorColorSet >> 2][2], 255);
             gDPSetEnvColor(POLY_OPA_DISP++, D_8082AB8C, D_8082AB90, D_8082AB94, 255);
+#ifdef __DREAMCAST__
+            /* DC: expand the cursor corner quads from the anchor vertex HERE. On N64
+               this runs in KaleidoScope_Update and patches the PREVIOUS frame's
+               (already-submitted) cursorVtx before the RSP reads it -- the draw
+               below re-allocates and zeroes cursorVtx every frame and only the
+               anchor is written before this point. Our DL is walked at the end of
+               the same frame, so the N64 timing trick leaves 3 of 4 corners at 0. */
+            KaleidoScope_UpdateCursorVtx(play);
+#endif
             gSPVertex(POLY_OPA_DISP++, pauseCtx->cursorVtx, 16, 0);
 
             for (i = j = 0; i < 4; i++, j += 4) {
@@ -3761,11 +3773,15 @@ void KaleidoScope_Update(PlayState* play) {
             pauseCtx->stickAdjX = input->rel.stick_x;
             pauseCtx->stickAdjY = input->rel.stick_y;
 
+#ifndef __DREAMCAST__ /* DC: done at draw time in KaleidoScope_DrawCursor */
             KaleidoScope_UpdateCursorVtx(play);
+#endif
             KaleidoScope_HandlePageToggles(pauseCtx, input);
         } else if ((pauseCtx->pageIndex == PAUSE_QUEST) && ((pauseCtx->mainState < PAUSE_MAIN_STATE_3) ||
                                                             (pauseCtx->mainState == PAUSE_MAIN_STATE_SONG_PROMPT))) {
+#ifndef __DREAMCAST__
             KaleidoScope_UpdateCursorVtx(play);
+#endif
         }
 
         if (pauseCtx->state == PAUSE_STATE_MAIN) {
