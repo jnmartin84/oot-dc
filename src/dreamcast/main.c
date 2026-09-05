@@ -63,8 +63,8 @@ static u64 sCombineMode = 0;
 static kthread_t* sMainThread;
 /* static */ volatile int sVblCounter;
 static volatile int sLastVbl;
-static uint32 sFpsTimer = 0;
-static uint32 sFpsCounter = 0;
+static uint32_t sFpsTimer = 0;
+static uint32_t sFpsCounter = 0;
 static float sFps = 0.0f;
 static int sAlphaTestEnabled = 0;
 static u32 sTlutChecksum = 0;
@@ -75,8 +75,8 @@ static float sFillColor[4] = { 0, 0, 0, 1 };
 static float sFogColor[4] = { 0, 0, 0, 1 };
 static float sFogColor2[4] = { 0, 0, 0, 1 };
 static float sBlendColor[4] = { 0, 0, 0, 1 };
-static int16 sFogMul;
-static int16 sFogOfs;
+static int16_t sFogMul;
+static int16_t sFogOfs;
 static u8 sFogChanged;
 static u8 sFogColChanged;
 /* DC fog-color-redirect (custom DL op "BLND"/"DFLS"): the PVR fog-color register
@@ -105,10 +105,10 @@ static float sPolygonOffsetBias = 0.0f;
 /* Per-section CPU timing. File-scope start vars so BEGIN/END need not share a
    scope; safe as long as a section isn't re-entered recursively (none are).
    Note: sPF_Tex includes sPF_TexUpload, and sPF_Combiner overlaps sPF_Tri. */
-static uint64 sPF_Tex = 0, sPF_TexUpload = 0, sPF_Vtx = 0, sPF_Tri = 0;
-static uint64 sPF_Mtx = 0, sPF_Combiner = 0, sPF_Draw2D = 0;
-static uint64 _pb_sPF_Tex, _pb_sPF_TexUpload, _pb_sPF_Vtx, _pb_sPF_Tri;
-static uint64 _pb_sPF_Mtx, _pb_sPF_Combiner, _pb_sPF_Draw2D;
+static uint64_t sPF_Tex = 0, sPF_TexUpload = 0, sPF_Vtx = 0, sPF_Tri = 0;
+static uint64_t sPF_Mtx = 0, sPF_Combiner = 0, sPF_Draw2D = 0;
+static uint64_t _pb_sPF_Tex, _pb_sPF_TexUpload, _pb_sPF_Vtx, _pb_sPF_Tri;
+static uint64_t _pb_sPF_Mtx, _pb_sPF_Combiner, _pb_sPF_Draw2D;
 /* PROF_ENABLE 0 = no per-section timing (no timer_ns_gettime64 calls) → shows the
    TRUE frame cost a ship build pays. Set to 1 to get the cpu ms/frame breakdown. */
 #define PROF_ENABLE 0
@@ -122,13 +122,13 @@ static uint64 _pb_sPF_Mtx, _pb_sPF_Combiner, _pb_sPF_Draw2D;
 #define NS_TO_MS(ns) ((ns) / 1000000.0)
 #define PROF_REPORT_INTERVAL_MS 10000
 
-static uint64 sPA_Total = 0;
+static uint64_t sPA_Total = 0;
 /* Coarse per-frame split (once-per-frame timers, negligible overhead, on even
    when PROF_ENABLE=0): CPU display-list walk vs CPU flush vs GPU wait. */
-static uint64 sFrameWalkNs = 0, sFrameFlushNs = 0, sFrameFinishNs = 0;
+static uint64_t sFrameWalkNs = 0, sFrameFlushNs = 0, sFrameFinishNs = 0;
 /* Localizing the un-instrumented walk_dl time: per-command state-handler buckets
    (cheap — these fire per state change, not per triangle). */
-static uint64 sWalkCombineNs = 0, sWalkOmodeNs = 0, sWalkTexNs = 0;
+static uint64_t sWalkCombineNs = 0, sWalkOmodeNs = 0, sWalkTexNs = 0;
 /* G_LOADTLUT redundancy: how often the palette CONTENT is unchanged (hash-based,
    safe against in-place palette modification — pointer dedup is NOT safe in OoT). */
 static u32 sTlutCalls = 0, sTlutRedundant = 0, sLastTlutHash = 0xFFFFFFFFu;
@@ -162,14 +162,14 @@ static int sLastTlutOffset = -1, sLastTlutCount = -1, sLastTlutType = -1;
 #define MORPHA_BODY_B  (32/2)
 
 #if WALK_STATS
-#define TIMED(acc, call) do { uint64 _tt = timer_ns_gettime64(); call; acc += timer_ns_gettime64() - _tt; } while (0)
+#define TIMED(acc, call) do { uint64_t _tt = timer_ns_gettime64(); call; acc += timer_ns_gettime64() - _tt; } while (0)
 #else
 #define TIMED(acc, call) do { (void)(acc); call; } while (0)
 #endif
-static uint64 sPA_FrameMin = UINT64_MAX;
-static uint64 sPA_FrameMax = 0;
-static uint32 sPC_Frames = 0;
-static uint64 sProf_ReportTimer = 0;
+static uint64_t sPA_FrameMin = UINT64_MAX;
+static uint64_t sPA_FrameMax = 0;
+static uint32_t sPC_Frames = 0;
+static uint64_t sProf_ReportTimer = 0;
 
 static u32 sLastTexAddr = 0;
 static u32 sLastTexFmt = 0;
@@ -457,6 +457,57 @@ u32 sPvrFrameBytes = 0;
    opaque/translucent split is driven by the game's own DL buffers instead of
    per-render-mode blend detection. */
 Gfx* gXluDLStart = NULL;
+/* Set/cleared by walk-time 'BLND'/'PBG1'/'PBG0' markers that z_play.c brackets
+   the frozen-world pause backdrop with. The backdrop and the perspective 3D
+   pause menu share the PVR depth buffer, and the near scene floor would
+   out-depth (occlude) the menu panels; squash the backdrop's depth into a far
+   band so all of it sorts behind the whole menu, preserving the world's own
+   relative ordering (monotonic scale). Must be a WALK-time flag, not a build-
+   time global: the DC renderer parses the DL deferred, after z_play returns. */
+/* Pause backdrop / menu depth strategy (DC): the frozen-world backdrop and the
+   perspective 3D pause menu share the PVR depth buffer. Rather than squash the
+   world DOWN behind the menu (which compresses its wide 1/w range into a tiny
+   low-precision band and wrecks the world's own sorting), leave the world at
+   NORMAL depth (sorts correctly, just like gameplay) and bias the MENU UP into
+   near depth bands so it always wins. Walk-time markers bracket each region:
+     'PBG1'/'PBG0'  = backdrop region (now only gates the dim, below)
+     'PD'+level     = backdrop brightness (dim)
+     'MEN1'/'MEN0'  = menu pages   -> near band (over the world)
+     'UIN1'/'UIN0'  = UI overlay   -> nearer band (over the pages), fixes the
+                                      pre-existing labels-under-pages bug
+   All still sit below the 2D HUD (s2DDepth*1e6 ~2e8). Scales are monotonic so
+   each region keeps its own internal ordering. */
+static u8 sPauseBackdropZ = 0;
+static u8 sPauseBackdropDim = 255; /* backdrop brightness 0..255; set by 'PD'+level marker */
+static u8 sPauseMenuNear = 0;
+static u8 sPauseUINear = 0;
+#define PAUSE_MENU_ZSCALE 256.0f
+#define PAUSE_UI_ZSCALE   4096.0f
+/* Draw-order tiebreak inside the menu bands. The page surface, its icons/text
+   quads, and the map layers are COPLANAR: on N64 the later draw wins at equal
+   depth; PVR sorts opaque purely by depth, so they z-fight. Bump each successive
+   batch's depth by a tiny proportional step (so genuinely different depths —
+   face vs face, Link's limbs — can't be reordered) and reset per page. */
+static u32 sMenuLayer = 0;
+/* Explicit tier: 0 = a face's SURFACE (background sections), 1 = its CONTENTS.
+   Set by walk-time markers 'PS '+n (surface start) / 'PG '+n (contents start)
+   emitted around every page's DrawPageSections in BOTH DrawPages blocks (block
+   1 = non-active faces, block 2 = the ACTIVE face). A counter threshold was not
+   enough: the active face is drawn only in block 2, after block 1 has already
+   run the counter high, so its surface and contents landed in the same tier. */
+static u8 sMenuContent = 0;
+/* 1e-4 was enough face-on but lost to the PVR's per-pixel 1/w interpolation
+   rounding on oblique/moving faces (steep depth gradient across the quad):
+   coplanar overlay pixels landed on the wrong side of the compare. 1e-3 per
+   layer + a fixed surface->content gap (MENU_CONTENT_BASE) keeps the margin
+   above that rounding while staying far below real face/limb depth deltas. */
+/* The depth-space bump is now only a hair for contents-vs-contents ties (cursor
+   over icon); surface-vs-contents separation is GEOMETRIC (MENU_CONTENT_ZOFF,
+   applied in handle_vtx). A big depth margin bled contents through the
+   neighboring face along their shared edge (HW: 'right side of a panel'). */
+#define MENU_LAYER_EPS    1e-4f
+#define MENU_CONTENT_BASE 8
+#define MENU_CONTENT_ZOFF 0.75f /* page-local units toward the camera */
 static u32 sDbgFastEmit = 0, sDbgClipEmit = 0;
 static u32 sDbgTriIn = 0;   /* triangles entering push_triangle (pre-cull) */
 static u32 sDbgPolyOP = 0, sDbgPolyTR = 0, sDbgPolyPT = 0;
@@ -2703,6 +2754,8 @@ static void pvr_submit_quad_tex(float x0, float y0, float x1, float y1, float z,
 /* Submit PVR polygon header lazily — called before first vertex of each batch */
 static void pvr_ensure_header(void) {
     if (!sPvrNeedHeader) return;
+    /* Each new batch inside the menu bands is a later draw: bump the layer. */
+    if (sPauseMenuNear || sPauseUINear) sMenuLayer++;
     /* Lazily resolve rendertile texture if dirty */
     if (sTiles[G_TX_RENDERTILE].texDirty) {
         resolve_tile_texture(G_TX_RENDERTILE);
@@ -3508,12 +3561,20 @@ static void handle_mtx(u32 w0, u32 w1) {
     }
 
     if (proj) {
-        if (load)
+        if (load) {
             memcpy(rsp.P_matrix, mtx->m, sizeof(rsp.P_matrix));
-        else
+            /* Decide ortho vs perspective ONLY from the raw loaded matrix.
+               Ortho: [3][3]==1, [2][3]==0; Perspective: [3][3]==0, [2][3]==-1.
+               Never re-derive it after a MUL: the game multiplies the viewing
+               (lookAt) matrix into projection, after which [2][3] becomes
+               -viewing[2][2] = the camera's forward-z. Looking straight along
+               X makes that exactly 0 -> perspective scenes got flagged ortho
+               and dumped on the 2D depth path (pause side faces over the UI
+               labels; the whole world flattening outside Hyrule Castle). */
+            sIsOrtho = (mtx->m[2][3] == 0.0f);
+        } else {
             mtx_mul(rsp.P_matrix, mtx->m, rsp.P_matrix);
-        /* Ortho: P[3][3]==1, P[2][3]==0; Perspective: P[3][3]==0, P[2][3]==-1 */
-        sIsOrtho = (rsp.P_matrix[2][3] == 0.0f);
+        }
     } else {
         if (push && rsp.modelview_stack_size < 18) {
             memcpy(rsp.modelview_stack[rsp.modelview_stack_size], rsp.modelview_stack[rsp.modelview_stack_size - 1],
@@ -3569,11 +3630,17 @@ static void handle_vtx(u32 w0, u32 w1) {
     /* Pass 1: position / fog / clip codes / screen / non-lit color / base UV.
        (XMTRX = MP for the perspective transform.) */
     shz_xmtrx_load_4x4((const float*)rsp.MP_matrix);
+    /* Pause-menu page CONTENTS get a real offset along the page's own normal
+       (page-local +z, toward the camera) so they sit geometrically in front of
+       their face. Adjacent cube faces are perpendicular, so this moves contents
+       PARALLEL to the neighboring face and they can never show through it —
+       unlike a depth-space margin, which bled through along the shared edge. */
+    float menuZOff = (sPauseMenuNear && sMenuContent) ? MENU_CONTENT_ZOFF : 0.0f;
     for (int i = 0; i < n; i++) {
         Vtx_t* v = &src[i].v;
         LoadedVertex* d = &sVertexBuffer[v0 + i];
 
-        shz_vec3_t pos = shz_vec3_init((float)v->ob[0], (float)v->ob[1], (float)v->ob[2]);
+        shz_vec3_t pos = shz_vec3_init((float)v->ob[0], (float)v->ob[1], (float)v->ob[2] + menuZOff);
         shz_vec4_t clip = shz_xmtrx_transform_vec4(shz_vec3_vec4(pos, 1.0f));
         if (sGeometryMode & G_FOG) {
             float w = clip.w, z = clip.z, fog;
@@ -3947,7 +4014,7 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
            (PVR adds oargb after texturing: tex*shade + oargb). Header fog is forced
            off while the flag is set, so this is the only fog contribution and it's
            a per-object color instead of the global gray register. */
-        uint32 fog_oargb;
+        uint32_t fog_oargb;
         if (sDamageFlash) {
             float f = src->fog * (1.0f / 255.0f);
             fog_oargb = 0xff000000u
@@ -4022,6 +4089,27 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
         packed_color = vismono_argb(packed_color);
         fog_oargb = vismono_argb(fog_oargb);
 
+        /* Pause backdrop: darken the frozen world (only inside the PBG bracket)
+           so the depth-squashed, roughly-sorted scene reads as a dim backdrop
+           behind the menu. Scales the modulate color; sPauseBackdropDim is the
+           brightness (255 = full) ramped down fast by z_play. Note: pure-REPLACE
+           surfaces (e.g. some skybox) ignore vertex color and won't dim here. */
+        if (sPauseBackdropZ && sPauseBackdropDim < 255) {
+            u32 d = sPauseBackdropDim;
+            u32 a = packed_color & 0xFF000000u;
+            u32 r = (((packed_color >> 16) & 0xFF) * d / 255u);
+            u32 g = (((packed_color >> 8) & 0xFF) * d / 255u);
+            u32 b = ((packed_color & 0xFF) * d / 255u);
+            packed_color = a | (r << 16) | (g << 8) | b;
+            {
+                u32 fa = fog_oargb & 0xFF000000u;
+                u32 fr = (((fog_oargb >> 16) & 0xFF) * d / 255u);
+                u32 fg = (((fog_oargb >> 8) & 0xFF) * d / 255u);
+                u32 fb = ((fog_oargb & 0xFF) * d / 255u);
+                fog_oargb = fa | (fr << 16) | (fg << 8) | fb;
+            }
+        }
+
         float u = (src->u - uls) * u_shift_mul;
         float v = (src->v - ult) * v_shift_mul;
 
@@ -4034,6 +4122,10 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
             pvr_z = s2DDepth * 1e6f;
         } else {
             pvr_z = src->inv_w;
+            /* Backdrop stays at normal depth (correct self-sorting); the menu is
+               biased into near bands to win over it. UI over pages over world. */
+            if (sPauseUINear)        pvr_z = src->inv_w * PAUSE_UI_ZSCALE   * (1.0f + sMenuLayer * MENU_LAYER_EPS);
+            else if (sPauseMenuNear) pvr_z = src->inv_w * PAUSE_MENU_ZSCALE * (1.0f + sMenuLayer * MENU_LAYER_EPS);
             if (pvr_z < 0.0000001f) pvr_z = 0.0000001f;
         }
         if (sPolygonOffsetBias > 0.0f)
@@ -4968,6 +5060,50 @@ static void walk_dl(Gfx* dl, int depth) {
                     sLensBracket = 0;
                     sPvrNeedHeader = 1;
                 }
+            } else if (w1 == 0x50424731u) {
+                /* 'PBG1': pause-backdrop depth squash on (world sorts behind menu) */
+                flush_triangles();
+                sPauseBackdropZ = 1;
+            } else if (w1 == 0x50424730u) {
+                /* 'PBG0': pause-backdrop depth squash off */
+                flush_triangles();
+                sPauseBackdropZ = 0;
+                sPauseBackdropDim = 255;
+            } else if ((w1 & 0xFFFF0000u) == 0x50440000u) {
+                /* 'PD'+level: pause-backdrop brightness (low byte, 0..255) */
+                flush_triangles();
+                sPauseBackdropDim = w1 & 0xFFu;
+            } else if (w1 == 0x4D454E31u) {
+                /* 'MEN1': pause menu pages near-depth bias on (over the world) */
+                flush_triangles();
+                sPauseMenuNear = 1;
+                sMenuLayer = 0;
+                sMenuContent = 0;
+            } else if (w1 == 0x4D454E30u) {
+                /* 'MEN0': pause menu pages near-depth bias off */
+                flush_triangles();
+                sPauseMenuNear = 0;
+            } else if (w1 == 0x55494E31u) {
+                /* 'UIN1': pause UI overlay near-depth bias on (labels over pages) */
+                flush_triangles();
+                sPauseUINear = 1;
+            } else if (w1 == 0x55494E30u) {
+                /* 'UIN0': pause UI overlay near-depth bias off */
+                flush_triangles();
+                sPauseUINear = 0;
+            } else if ((w1 & 0xFFFFFF00u) == 0x50472000u) {
+                /* 'PG '+n: kaleido page CONTENTS start (0..3), 0xFF = none (after
+                   DrawPages). */
+                flush_triangles();
+                /* Contents tier: fires right after the page's background sections.
+                   0xFF (after DrawPages) drops back to the surface tier. */
+                sMenuContent = ((w1 & 0xFF) == 0xFF) ? 0 : 1;
+                sMenuLayer = ((w1 & 0xFF) == 0xFF) ? 0 : MENU_CONTENT_BASE;
+            } else if ((w1 & 0xFFFFFF00u) == 0x50532000u) {
+                /* 'PS '+n: page SURFACE start (before its background sections) */
+                flush_triangles();
+                sMenuContent = 0;
+                sMenuLayer = 0;
             }
             continue;
         }
@@ -5271,7 +5407,7 @@ void pc_process_displaylist(Gfx* dl) {
         exit(0);
     }
 
-    uint64 frameStart = timer_ns_gettime64();
+    uint64_t frameStart = timer_ns_gettime64();
 
     if (pvrOOM) {
         pvrOOM = 0;
@@ -5330,9 +5466,9 @@ void pc_process_displaylist(Gfx* dl) {
 
     rsp_reset();
 
-    uint64 _tWalk0 = timer_ns_gettime64();
+    uint64_t _tWalk0 = timer_ns_gettime64();
     walk_dl(dl, 0);
-    uint64 _tWalk1 = timer_ns_gettime64();
+    uint64_t _tWalk1 = timer_ns_gettime64();
     sFrameWalkNs += _tWalk1 - _tWalk0;
     flush_triangles();
     sPtBuffering = 0;  /* stop buffering before list finalization */
@@ -5418,22 +5554,22 @@ void pc_process_displaylist(Gfx* dl) {
                 pvr_list_finish();
     }
 
-    uint64 _tFlush1 = timer_ns_gettime64();
+    uint64_t _tFlush1 = timer_ns_gettime64();
     sFrameFlushNs += _tFlush1 - _tWalk1;   /* list-finalize + TR/PT flushes (CPU submit) */
     pvr_scene_finish();
-    uint64 _tFin1 = timer_ns_gettime64();
+    uint64_t _tFin1 = timer_ns_gettime64();
     sFrameFinishNs += _tFin1 - _tFlush1;   /* GPU wait */
     sFrameCount++;
 
     /*  FPS report every 10s */
-    uint64 frameEnd = timer_ns_gettime64();
-    uint64 frameTime = frameEnd - frameStart;
+    uint64_t frameEnd = timer_ns_gettime64();
+    uint64_t frameTime = frameEnd - frameStart;
     sPA_Total += frameTime;
     if (frameTime < sPA_FrameMin) sPA_FrameMin = frameTime;
     if (frameTime > sPA_FrameMax) sPA_FrameMax = frameTime;
     sPC_Frames++;
 
-    uint32 now_ms = timer_ms_gettime64();
+    uint32_t now_ms = timer_ms_gettime64();
     if (sProf_ReportTimer == 0) sProf_ReportTimer = now_ms;
     if (now_ms - sProf_ReportTimer >= PROF_REPORT_INTERVAL_MS && sPC_Frames > 0) {
 #if WALK_STATS
@@ -5442,10 +5578,10 @@ void pc_process_displaylist(Gfx* dl) {
         static int sCalibrated = 0;
         if (!sCalibrated) {
             sCalibrated = 1;
-            volatile uint64 sink = 0;
-            uint64 c0 = timer_ns_gettime64();
+            volatile uint64_t sink = 0;
+            uint64_t c0 = timer_ns_gettime64();
             for (int k = 0; k < 100000; k++) sink += timer_ns_gettime64();
-            uint64 c1 = timer_ns_gettime64();
+            uint64_t c1 = timer_ns_gettime64();
             printf("  TIMER CAL: %.1f ns/call  (tri overhead ~= 2*this*in/frame)\n",
                    (double)(c1 - c0) / 100000.0);
         }

@@ -1352,9 +1352,15 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
             MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1173);
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 0; } /* PS0 page surface */
+#endif
             POLY_OPA_DISP = KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->itemPageVtx,
                                                           SELECT_ITEM_TEXS(gSaveContext.language));
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 0; } /* DIAG PG0 */
+#endif
             KaleidoScope_DrawItemSelect(play);
         }
 
@@ -1370,9 +1376,15 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
             MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1196);
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 1; } /* PS1 page surface */
+#endif
             POLY_OPA_DISP = KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->equipPageVtx,
                                                           EQUIPMENT_TEXS(gSaveContext.language));
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 1; } /* DIAG PG1 */
+#endif
             KaleidoScope_DrawEquipment(play);
         }
 
@@ -1389,9 +1401,15 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
             MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1220);
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 2; } /* PS2 page surface */
+#endif
             POLY_OPA_DISP = KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->questPageVtx,
                                                           QUEST_STATUS_TEXS(gSaveContext.language));
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 2; } /* DIAG PG2 */
+#endif
             KaleidoScope_DrawQuestStatus(play, gfxCtx);
         }
 
@@ -1408,10 +1426,16 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
             MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1243);
 
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 3; } /* PS3 page surface */
+#endif
             POLY_OPA_DISP =
                 KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->mapPageVtx, MAP_TEXS(gSaveContext.language));
 
             if (sInDungeonScene) {
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 3; } /* DIAG PG3 */
+#endif
                 KaleidoScope_DrawDungeonMap(play, gfxCtx);
                 Gfx_SetupDL_42Opa(gfxCtx);
 
@@ -1421,6 +1445,9 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
                     PauseMapMark_Draw(play);
                 }
             } else {
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 3; } /* DIAG PG3 */
+#endif
                 KaleidoScope_DrawWorldMap(play, gfxCtx);
             }
         }
@@ -1439,8 +1466,14 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
                 MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1281);
 
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 0; } /* PS0 page surface */
+#endif
                 POLY_OPA_DISP = KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->itemPageVtx,
                                                               SELECT_ITEM_TEXS(gSaveContext.language));
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 0; } /* PG0 page contents */
+#endif
 
                 KaleidoScope_DrawItemSelect(play);
                 break;
@@ -1454,8 +1487,14 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
                 MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1303);
 
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 3; } /* PS3 page surface */
+#endif
                 POLY_OPA_DISP =
                     KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->mapPageVtx, MAP_TEXS(gSaveContext.language));
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 3; } /* PG3 page contents */
+#endif
 
                 if (sInDungeonScene) {
                     KaleidoScope_DrawDungeonMap(play, gfxCtx);
@@ -1486,8 +1525,14 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
                 MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1343);
 
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 2; } /* PS2 page surface */
+#endif
                 POLY_OPA_DISP = KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->questPageVtx,
                                                               QUEST_STATUS_TEXS(gSaveContext.language));
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 2; } /* PG2 page contents */
+#endif
 
                 KaleidoScope_DrawQuestStatus(play, gfxCtx);
 
@@ -1505,8 +1550,14 @@ void KaleidoScope_DrawPages(PlayState* play, GraphicsContext* gfxCtx) {
 
                 MATRIX_FINALIZE_AND_LOAD(POLY_OPA_DISP++, gfxCtx, "../z_kaleido_scope_PAL.c", 1367);
 
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50532000u | 1; } /* PS1 page surface */
+#endif
                 POLY_OPA_DISP = KaleidoScope_DrawPageSections(POLY_OPA_DISP, pauseCtx->equipPageVtx,
                                                               EQUIPMENT_TEXS(gSaveContext.language));
+#ifdef __DREAMCAST__
+                { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x50472000u | 1; } /* PG1 page contents */
+#endif
 
                 KaleidoScope_DrawEquipment(play);
 
@@ -3443,7 +3494,16 @@ void KaleidoScope_Draw(PlayState* play) {
 
         Gfx_SetupDL_42Opa(play->state.gfxCtx);
         KaleidoScope_SetVertices(play, play->state.gfxCtx);
+#ifdef __DREAMCAST__
+        /* DC: bias the menu pages into a near depth band so they sort over the
+           (normal-depth) frozen-world backdrop. */
+        { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x4D454E31u; } /* MEN1 */
+#endif
         KaleidoScope_DrawPages(play, play->state.gfxCtx);
+#ifdef __DREAMCAST__
+        { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x4D454E30u; } /* MEN0 */
+        { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x504720FFu; } /* DIAG PG none */
+#endif
 
         Gfx_SetupDL_42Opa(play->state.gfxCtx);
         gDPSetCombineLERP(POLY_OPA_DISP++, PRIMITIVE, ENVIRONMENT, TEXEL0, ENVIRONMENT, TEXEL0, 0, PRIMITIVE, 0,
@@ -3452,7 +3512,16 @@ void KaleidoScope_Draw(PlayState* play) {
         KaleidoScope_SetView(pauseCtx, 0.0f, 0.0f, 64.0f);
 
         if (!IS_PAUSE_STATE_GAMEOVER(pauseCtx)) {
+#ifdef __DREAMCAST__
+            /* DC: the nav-label / info-panel overlay is perspective 3D on OP and a
+               rotated page can out-depth it (PVR autosorts by depth). Bracket it
+               with a near-depth bias so it always sorts over the pages. */
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x55494E31u; } /* UIN1 */
+#endif
             KaleidoScope_DrawUIOverlay(play);
+#ifdef __DREAMCAST__
+            { Gfx* _g = POLY_OPA_DISP++; _g->words.w0 = 0x424C4E44u; _g->words.w1 = 0x55494E30u; } /* UIN0 */
+#endif
         }
     }
 
@@ -3879,12 +3948,17 @@ void KaleidoScope_Update(PlayState* play) {
             sPreRenderCvg = (void*)ALIGN16((uintptr_t)pauseCtx->nameSegment +
                                            MAX(MAP_NAME_TEX1_SIZE, ITEM_NAME_TEX_SIZE) + MAP_NAME_TEX2_SIZE);
 
+#ifndef __DREAMCAST__
+            /* DC: no FB-capture prerender; Link is drawn in page space during the
+               equipment page draw (KaleidoScope_DrawEquipment). This setup-phase
+               render has no page matrix, so skip it. */
             PreRender_Init(&sPlayerPreRender);
             PreRender_SetValuesSave(&sPlayerPreRender, PAUSE_EQUIP_PLAYER_WIDTH, PAUSE_EQUIP_PLAYER_HEIGHT,
                                     pauseCtx->playerSegment, NULL, sPreRenderCvg);
 
             KaleidoScope_DrawPlayerWork(play);
             KaleidoScope_SetupPlayerPreRender(play);
+#endif
 
             // World map points
 

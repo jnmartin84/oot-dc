@@ -1146,6 +1146,27 @@ void Play_DrawOverlayElements(PlayState* this) {
 
 extern u8 noFlare;
 
+#ifdef LINUX
+/* DC pause backdrop: the world's opaque DL is redirected into gZBuffer (free
+   during pause) instead of the shared polyOpa pool, which the fully-open menu
+   nearly fills. sPauseWorldPoolSaved holds the real pool arena across the world
+   draw; the flag tells the restore site (before the overlay) to undo the swap. */
+static TwoHeadGfxArena sPauseWorldPoolSaved;
+static u8 sPauseWorldRedirect = false;
+
+/* Walk-time markers the renderer (main.c) acts on as it parses the DL: bracket
+   the frozen-world backdrop so its depth is squashed behind the menu. A build-
+   time flag can't work — the DC renderer parses the DL deferred, after this
+   function returns. 'BLND' sentinel + 'PBG1'/'PBG0' sub-ops. */
+#define DC_PAUSE_BACKDROP_MARK(disp, subop)  \
+    do {                                     \
+        Gfx* _g = (disp)++;                  \
+        _g->words.w0 = 0x424C4E44u;          \
+        _g->words.w1 = (subop);              \
+    } while (0)
+#define PAUSE_BACKDROP_DIM 24u /* backdrop brightness 0..255 (~9%); tune to taste */
+#endif
+
 void Play_Draw(PlayState* this) {
     GraphicsContext* gfxCtx = this->state.gfxCtx;
     Lights* sp228;
@@ -1276,17 +1297,36 @@ void Play_Draw(PlayState* this) {
 
         if (R_PAUSE_BG_PRERENDER_STATE == PAUSE_BG_PRERENDER_READY) {
 #ifdef LINUX
-            /* Skip the pause
-               background fill rect drawing it on the TR list covers the
-               kaleido inventory elements due to autosort Z conflicts. */
+            /* DC: no framebuffer readback on PVR. Instead of restoring a captured
+               backdrop, redraw the frozen world (actor sim is suspended while
+               paused) as the backdrop — but into gZBuffer, not the polyOpa pool.
+               Branch the pool's opaque list into a gZBuffer-backed arena, then
+               swap polyOpa so the world's opaque commands and matrices build
+               there; the menu keeps the pool. Restored just before the overlay
+               below. polyXlu/overlay have headroom and stay in the pool. */
+            {
+                TwoHeadGfxArena zbArena;
+
+                THGA_Init(&zbArena, gZBuffer, sizeof(gZBuffer));
+                gSPDisplayList(POLY_OPA_DISP++, zbArena.p);
+                sPauseWorldPoolSaved = gfxCtx->polyOpa;
+                gfxCtx->polyOpa = zbArena;
+                /* first cmds of the gZBuffer world DL: squash depth behind the
+                   menu, then dim the backdrop so its rough sort reads as a dark
+                   backdrop. 'PD'+level, level = brightness 0..255 (tune here). */
+                DC_PAUSE_BACKDROP_MARK(POLY_OPA_DISP, 0x50424731u);                 /* 'PBG1' on */
+                DC_PAUSE_BACKDROP_MARK(POLY_OPA_DISP, 0x50440000u | PAUSE_BACKDROP_DIM); /* 'PD'+dim */
+                sPauseWorldRedirect = true;
+            }
+            /* fall through: draw skybox / scene / actors as the backdrop */
 #else
             Gfx* gfxP = POLY_OPA_DISP;
 
             PreRender_RestoreFramebuffer(&this->pauseBgPreRender, &gfxP);
             POLY_OPA_DISP = gfxP;
-#endif
 
             goto Play_Draw_DrawOverlayElements;
+#endif
         }
 
         if (!DEBUG_FEATURES || (R_HREG_MODE != HREG_MODE_PLAY) || R_PLAY_DRAW_SKYBOX) {
@@ -1361,7 +1401,15 @@ void Play_Draw(PlayState* this) {
             Environment_FillScreen(gfxCtx, 0, 0, 0, this->bgCoverAlpha, FILL_SCREEN_XLU);
         }
 
-        if (!DEBUG_FEATURES || (R_HREG_MODE != HREG_MODE_PLAY) || R_PLAY_DRAW_ACTORS) {
+        if ((!DEBUG_FEATURES || (R_HREG_MODE != HREG_MODE_PLAY) || R_PLAY_DRAW_ACTORS)
+#ifdef LINUX
+            /* DC: skip actors in the pause backdrop. The kaleido menu reuses
+               actor-overlay memory (it loads player_actor for the equipment
+               model), so redrawing the frozen Player actor here dereferences an
+               overwritten overlay and crashes. Backdrop = scene + skybox only. */
+            && !sPauseWorldRedirect
+#endif
+        ) {
             Actor_DrawAll(this, &this->actorCtx);
         }
 
@@ -1431,6 +1479,17 @@ void Play_Draw(PlayState* this) {
             R_GRAPH_TASKSET00_FLAGS |= 1;
             goto Play_Draw_skip;
         }
+
+#ifdef LINUX
+        if (sPauseWorldRedirect) {
+            /* End the gZBuffer world DL and hand control back to the pool for the
+               menu. (Measured: the world uses ~7KB of gZBuffer's 0x25800.) */
+            DC_PAUSE_BACKDROP_MARK(POLY_OPA_DISP, 0x50424730u); /* 'PBG0' off */
+            gSPEndDisplayList(POLY_OPA_DISP++);
+            gfxCtx->polyOpa = sPauseWorldPoolSaved;
+            sPauseWorldRedirect = false;
+        }
+#endif
 
     Play_Draw_DrawOverlayElements:
         if (!DEBUG_FEATURES || (R_HREG_MODE != HREG_MODE_PLAY) || R_PLAY_DRAW_OVERLAY_ELEMENTS) {

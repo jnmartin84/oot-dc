@@ -161,11 +161,57 @@ void KaleidoScope_DrawPlayerWork(PlayState* play) {
 
     rot.y = 32300;
     rot.x = rot.z = 0;
+#ifdef __DREAMCAST__
+    /* DC: no framebuffer capture — Player_DrawPauseImpl renders Link directly
+       into the current equipment-page matrix (see z_player_lib.c). Override the
+       standalone-projection pos/rot/scale with PAGE-space values that place him
+       in the box. TUNABLE — dial these on HW. */
+/* Page-local +z faces the camera (HW-verified: N64's rot.y 32300 showed his
+   back, +z offset puts him in front of the panel). Box = equipVtx x -64..0,
+   y 50..-62 (112 tall). Scale from the N64 setup: 0.047 at 400 units / 60deg
+   fov ~= a 410-unit Link in a 462-unit view -> raw ~8700 units; ~100 page
+   units tall -> ~0.012. Feet ~44% below box center. */
+#define DC_EQUIP_LINK_X (-32.0f)
+#define DC_EQUIP_LINK_Y (-56.0f)
+#define DC_EQUIP_LINK_Z (8.0f)    /* toward camera (HW: camera is on local +z), off the z=0 panel plane */
+#define DC_EQUIP_LINK_SCALE (0.012f)
+#define DC_EQUIP_LINK_ROTY (-468)  /* N64's 32300 flipped 180deg: HW showed his back at 32300 */
+    pos.x = DC_EQUIP_LINK_X;
+    pos.y = DC_EQUIP_LINK_Y;
+    pos.z = DC_EQUIP_LINK_Z;
+    scale = DC_EQUIP_LINK_SCALE;
+    rot.y = DC_EQUIP_LINK_ROTY;
+    rot.x = rot.z = 0;
+#endif
     Player_DrawPause(play, pauseCtx->playerSegment, &pauseCtx->playerSkelAnime, &pos, &rot, scale,
                      SWORD_EQUIP_TO_PLAYER(CUR_EQUIP_VALUE(EQUIP_TYPE_SWORD)),
                      TUNIC_EQUIP_TO_PLAYER(CUR_EQUIP_VALUE(EQUIP_TYPE_TUNIC)),
                      SHIELD_EQUIP_TO_PLAYER(CUR_EQUIP_VALUE(EQUIP_TYPE_SHIELD)),
                      BOOTS_EQUIP_TO_PLAYER(CUR_EQUIP_VALUE(EQUIP_TYPE_BOOTS)));
+#ifdef __DREAMCAST__
+    /* DC: Link's block now runs INLINE in OPA (not early from WORK), so the
+       state it sets persists into everything drawn after it this frame. Put
+       the kaleido state back: the pages never set geometry mode themselves
+       (they run under whatever is current, so his G_LIGHTING/G_CULL_BACK made
+       vertex colors read as normals), his tunic ENV color, his fog, and his
+       segment 0x0C = gCullBackDList (the icon-alt segment -> garbage icons). */
+    {
+        InterfaceContext* interfaceCtx = &play->interfaceCtx;
+        OPEN_DISPS(play->state.gfxCtx, "../z_kaleido_equipment.c", 0);
+        Gfx_SetupDL_42Opa(play->state.gfxCtx);
+        gSPClearGeometryMode(POLY_OPA_DISP++, G_LIGHTING | G_TEXTURE_GEN | G_TEXTURE_GEN_LINEAR | G_CULL_BOTH | G_FOG);
+        gSPSegment(POLY_OPA_DISP++, 0x07, pauseCtx->playerSegment);
+        gSPSegment(POLY_OPA_DISP++, 0x08, pauseCtx->iconItemSegment);
+        gSPSegment(POLY_OPA_DISP++, 0x09, pauseCtx->iconItem24Segment);
+        gSPSegment(POLY_OPA_DISP++, 0x0A, pauseCtx->nameSegment);
+        gSPSegment(POLY_OPA_DISP++, 0x0B, interfaceCtx->mapSegment);
+        gSPSegment(POLY_OPA_DISP++, 0x0C, pauseCtx->iconItemAltSegment);
+        gSPSegment(POLY_OPA_DISP++, 0x0D, pauseCtx->iconItemLangSegment);
+        gDPSetPrimColor(POLY_OPA_DISP++, 0, 0, ZREG(39), ZREG(40), ZREG(41), pauseCtx->alpha);
+        gDPSetEnvColor(POLY_OPA_DISP++, ZREG(43), ZREG(44), ZREG(45), 0);
+        CLOSE_DISPS(play->state.gfxCtx, "../z_kaleido_equipment.c", 0);
+    }
+#endif
 }
 
 #ifndef AVOID_UB
@@ -684,6 +730,9 @@ void KaleidoScope_DrawEquipment(PlayState* play) {
 
     KaleidoScope_DrawPlayerWork(play);
 
+#ifndef __DREAMCAST__
+    /* DC has no framebuffer capture; DrawPlayerWork rendered Link in page space
+       directly, so the save/apply-filter steps are unused. */
     if ((pauseCtx->mainState == PAUSE_MAIN_STATE_EQUIP_CHANGED) && (sEquipTimer == 10)) {
         KaleidoScope_SetupPlayerPreRender(play);
     }
@@ -696,6 +745,7 @@ void KaleidoScope_DrawEquipment(PlayState* play) {
         KaleidoScope_ProcessPlayerPreRender();
 #endif
     }
+#endif
 
     gSPSegment(POLY_OPA_DISP++, 0x07, pauseCtx->playerSegment);
     gSPSegment(POLY_OPA_DISP++, 0x08, pauseCtx->iconItemSegment);
@@ -705,9 +755,12 @@ void KaleidoScope_DrawEquipment(PlayState* play) {
     gSPSegment(POLY_OPA_DISP++, 0x0C, pauseCtx->iconItemAltSegment);
 
     // Draw player prerender onto the equip page
-
+#ifndef __DREAMCAST__
     Gfx_SetupDL_42Opa(play->state.gfxCtx);
     KaleidoScope_DrawEquipmentImage(play, pauseCtx->playerSegment, PAUSE_EQUIP_PLAYER_WIDTH, PAUSE_EQUIP_PLAYER_HEIGHT);
+#endif
+    /* DC: Link's real model is drawn in page space by KaleidoScope_DrawPlayerWork
+       above; there is no captured playerSegment texture to blit here. */
 
     CLOSE_DISPS(play->state.gfxCtx, "../z_kaleido_equipment.c", 609);
 }

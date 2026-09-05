@@ -1969,20 +1969,28 @@ s32 Player_OverrideLimbDrawPause(PlayState* play, s32 limbIndex, Gfx** dList, Ve
 void Player_DrawPauseImpl(PlayState* play, void* gameplayKeep, void* linkObject, SkelAnime* skelAnime, Vec3f* pos,
                           Vec3s* rot, f32 scale, s32 sword, s32 tunic, s32 shield, s32 boots, s32 width, s32 height,
                           Vec3f* eye, Vec3f* at, f32 fovy, void* colorFrameBuffer, void* depthFrameBuffer) {
+#ifndef __DREAMCAST__
     // Note: the viewport x and y values are overwritten below, before usage
     static Vp viewport = { (PAUSE_EQUIP_PLAYER_WIDTH / 2) << 2, (PAUSE_EQUIP_PLAYER_HEIGHT / 2) << 2, G_MAXZ / 2, 0,
                            (PAUSE_EQUIP_PLAYER_WIDTH / 2) << 2, (PAUSE_EQUIP_PLAYER_HEIGHT / 2) << 2, G_MAXZ / 2, 0 };
+#endif
     static Lights1 lights1 = gdSPDefLights1(80, 80, 80, 255, 255, 255, 84, 84, -84);
     static Vec3f lightDir = { 89.8f, 0.0f, 89.8f };
     u8 playerSwordAndShield[2];
+#ifndef __DREAMCAST__
     Gfx* opaRef;
     Gfx* xluRef;
     u16 perspNorm;
     Mtx* perspMtx = GRAPH_ALLOC(play->state.gfxCtx, sizeof(Mtx));
     Mtx* lookAtMtx = GRAPH_ALLOC(play->state.gfxCtx, sizeof(Mtx));
+#endif
 
     OPEN_DISPS(play->state.gfxCtx, "../z_player_lib.c", 3129);
 
+#ifndef __DREAMCAST__
+    /* N64: run this block early from the WORK list (it carries its own
+       viewport/projection and renders to an offscreen buffer); the OPA/XLU
+       streams branch over it. */
     opaRef = POLY_OPA_DISP;
     POLY_OPA_DISP++;
 
@@ -1991,6 +1999,14 @@ void Player_DrawPauseImpl(PlayState* play, void* gameplayKeep, void* linkObject,
 
     gSPDisplayList(WORK_DISP++, POLY_OPA_DISP);
     gSPDisplayList(WORK_DISP++, POLY_XLU_DISP);
+#else
+    /* DC: the WORK list executes before any of OPA (chain is work->opa->xlu),
+       i.e. before the kaleido view/projection exist -> Link would transform
+       with an identity projection (w==1) and clip off-screen. Emit INLINE in
+       OPA instead so he draws inside the equipment page's perspective + cube-
+       face matrix. */
+    Matrix_Push();
+#endif
 
     gSPSegment(POLY_OPA_DISP++, 0x00, NULL);
 
@@ -2011,6 +2027,7 @@ void Player_DrawPauseImpl(PlayState* play, void* gameplayKeep, void* linkObject,
         gSPLoadGeometryMode(POLY_OPA_DISP++, G_ZBUFFER | G_SHADE | G_CULL_BACK | G_LIGHTING | G_SHADING_SMOOTH);
     }
 
+#ifndef __DREAMCAST__
     gDPSetScissor(POLY_OPA_DISP++, G_SC_NON_INTERLACE, 0, 0, width, height);
     gSPClipRatio(POLY_OPA_DISP++, FRUSTRATIO_1);
 
@@ -2044,12 +2061,25 @@ void Player_DrawPauseImpl(PlayState* play, void* gameplayKeep, void* linkObject,
     guLookAt(lookAtMtx, eye->x, eye->y, eye->z, at->x, at->y, at->z, 0.0f, 1.0f, 0.0f);
 
     gSPMatrix(POLY_OPA_DISP++, lookAtMtx, G_MTX_NOPUSH | G_MTX_MUL | G_MTX_PROJECTION);
+#endif
 
     playerSwordAndShield[0] = sword;
     playerSwordAndShield[1] = shield;
 
+#ifdef __DREAMCAST__
+    /* DC: no framebuffer capture. Render Link directly into the current
+       (equipment page) matrix so he lives on the page and rotates with it.
+       pos/rot/scale arrive in PAGE space from KaleidoScope_DrawPlayerWork's DC
+       branch. APPLY (not NEW) to keep the page's cube-face transform. */
+    Matrix_Translate(pos->x, pos->y, pos->z, MTXMODE_APPLY);
+    Matrix_RotateX(rot->x * (M_PI / 32768.0f), MTXMODE_APPLY);
+    Matrix_RotateY(rot->y * (M_PI / 32768.0f), MTXMODE_APPLY);
+    Matrix_RotateZ(rot->z * (M_PI / 32768.0f), MTXMODE_APPLY);
+    Matrix_Scale(scale, scale, scale, MTXMODE_APPLY);
+#else
     Matrix_SetTranslateRotateYXZ(pos->x, pos->y, pos->z, rot);
     Matrix_Scale(scale, scale, scale, MTXMODE_APPLY);
+#endif
 
     gSPSegment(POLY_OPA_DISP++, 0x04, gameplayKeep);
     gSPSegment(POLY_OPA_DISP++, 0x06, linkObject);
@@ -2067,11 +2097,15 @@ void Player_DrawPauseImpl(PlayState* play, void* gameplayKeep, void* linkObject,
     Player_DrawImpl(play, skelAnime->skeleton, skelAnime->jointTable, skelAnime->dListCount, 0, tunic, boots,
                     PLAYER_FACE_NEUTRAL, Player_OverrideLimbDrawPause, NULL, &playerSwordAndShield);
 
+#ifndef __DREAMCAST__
     gSPEndDisplayList(POLY_OPA_DISP++);
     gSPEndDisplayList(POLY_XLU_DISP++);
 
     gSPBranchList(opaRef, POLY_OPA_DISP);
     gSPBranchList(xluRef, POLY_XLU_DISP);
+#else
+    Matrix_Pop(); /* restore the page matrix for the rest of the equipment draw */
+#endif
 
     CLOSE_DISPS(play->state.gfxCtx, "../z_player_lib.c", 3288);
 }

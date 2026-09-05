@@ -2,6 +2,7 @@
 #define MAIN_H
 
 #include "ultra64.h"
+#include <stdint.h>
 #include <dc/pvr.h>
 
 
@@ -33,7 +34,7 @@ typedef struct __attribute__((aligned(64))) TextureCacheEntry_s {
     // 40
     uint8_t tlutType;
     // 41
-    uint8 dirty;                   // Set by gfx_texture_cache_invalidate
+    uint8_t dirty;                   // Set by gfx_texture_cache_invalidate
     // 42, 43
     uint8_t pad[2];
     // 44
