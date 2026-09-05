@@ -2511,6 +2511,57 @@ static void tr_start_batch(void) {
     }
 }
 
+/* Defer a 2D quad onto the TR batch buffer (chronological, like the lens
+   primes on PT). Blended/alpha 2D submitted while the OP list is open renders
+   with blending IGNORED (menus draw their UI in POLY_OPA: file select, map
+   select, game over -- the "PT/TR on OP" glitch). Returns 0 if full so the
+   caller can fall back to a live submit. */
+static int tr_defer_quad_2d(const pvr_poly_hdr_t* hdr, float x0, float y0, float x1, float y1,
+                            float z, float u0, float v0, float u1, float v1, u32 argb) {
+    TrBatch* b = NULL;
+    if (sTrVertCount + 6 > MAX_TR_VERTS)
+        return 0;
+    if (sTrBatchCount > 0) {
+        TrBatch* prev = &sTrBatches[sTrBatchCount - 1];
+        if (prev->count == 0)
+            prev->count = sTrVertCount - prev->start;
+        /* Coalesce runs of identical-state quads (text glyphs: one texrect per
+           glyph would burn a batch each and blow the 256-batch cap on text-
+           heavy menus). Only extend a batch this function created (count is a
+           multiple of 6) whose verts are still the tail of the array. */
+        if (!prev->is_mod && prev->count > 0 && (prev->count % 6) == 0 &&
+            prev->start + prev->count == sTrVertCount &&
+            memcmp(&prev->hdr, hdr, sizeof(*hdr)) == 0) {
+            b = prev;
+            b->count += 6;
+        }
+    }
+    if (b == NULL) {
+        if (sTrBatchCount >= MAX_TR_BATCHES)
+            return 0;
+        b = &sTrBatches[sTrBatchCount++];
+        b->start = sTrVertCount;
+        b->count = 6;
+        b->is_mod = 0;
+        b->hdr = *hdr;
+    }
+    /* same corner layout as pvr_submit_quad_tex, as two tris */
+    static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
+    float vx[4] = { x0, x1, x0, x1 };
+    float vy[4] = { y0, y0, y1, y1 };
+    float vu[4] = { u0, u1, u0, u1 };
+    float vv[4] = { v0, v0, v1, v1 };
+    for (int i = 0; i < 6; i++) {
+        MtxVert* mv = &sTrVerts[sTrVertCount++];
+        mv->x = vx[ix[i]]; mv->y = vy[ix[i]]; mv->z = z;
+        mv->u = vu[ix[i]]; mv->v = vv[ix[i]];
+        mv->u0 = 0.0f; mv->v0 = 0.0f;
+        mv->argb = argb; mv->oargb = 0;
+    }
+    sPvrNeedHeader = 1;   /* next live batch must not merge into this one */
+    return 1;
+}
+
 /* Flush buffered TR geometry onto PVR_LIST_TR_POLY. Called at end of frame
    after OP is finished and the TR list is open. */
 static void flush_deferred_tr(void) {
@@ -3130,15 +3181,26 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
             s2DDepth += OVERLAY_Z_STEP;
             float z = s2DDepth * 1e6f;
 
+            /* When the OP list is open (menus: the N64-logo sparkle screen
+               draws this in POLY_OPA), the FB-alpha passes below are
+               meaningless -- OP ignores blending. Defer all four passes to the
+               TR buffer, all-or-nothing (a split pass chain composes wrong),
+               each staggered in z so TR autosort cannot reorder them
+               (equal-z autosort order is undefined; see the far-pin rule). */
+            int defer_mt = (sPvrCurrentList == PVR_LIST_OP_POLY);
+            if (defer_mt && (sTrBatchCount + 4 > MAX_TR_BATCHES || sTrVertCount + 24 > MAX_TR_VERTS))
+                defer_mt = 0;   /* fall back live (pre-existing OP look) */
+            #define MT_PASS_Z(k) (z + (float)(k) * (OVERLAY_Z_STEP * 1e6f * 0.2f))
+
             /* --- Pass 0: Clear FB alpha in texrect region ---
                Render white quad with alpha=0, blend DESTCOLOR/ZERO.
-               result = (1,1,1,0) × dst = (dst.r, dst.g, dst.b, 0)
+               result = (1,1,1,0) x dst = (dst.r, dst.g, dst.b, 0)
                This preserves the existing color (3D logo etc) but zeros
                the alpha channel so DESTALPHA masking in passes 2-3 works
                regardless of what prior rendering wrote to FB alpha. */
             {
                 pvr_poly_cxt_t cxt;
-                pvr_poly_cxt_col(&cxt, sPvrCurrentList);
+                pvr_poly_cxt_col(&cxt, defer_mt ? PVR_LIST_TR_POLY : sPvrCurrentList);
                 cxt.gen.culling = PVR_CULLING_NONE;
                 cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
                 cxt.depth.comparison = PVR_DEPTHCMP_ALWAYS;
@@ -3147,21 +3209,26 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
                 cxt.blend.dst = PVR_BLEND_ZERO;
                 pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
                 pvr_poly_compile(&hdr, &cxt);
-                SHZ_PREFETCH(&hdr);
-                shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-                sPvrFrameBytes += 32;
-                float vx[4] = {x0, x1, x0, x1};
-                float vy[4] = {y0, y0, y1, y1};
-                for (int i = 0; i < 4; i++) {
-                    pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
-                    vert->flags = (i == 3) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = vx[i]; vert->y = vy[i]; vert->z = z;
-                    vert->u = 0; vert->v = 0;
-                    vert->argb = 0x00FFFFFF; /* white color, zero alpha */
-                    vert->oargb = 0;
-                    pvr_dr_commit(vert);
+                if (defer_mt) {
+                    tr_defer_quad_2d(&hdr, x0, y0, x1, y1, MT_PASS_Z(0),
+                                     0.0f, 0.0f, 0.0f, 0.0f, 0x00FFFFFF);
+                } else {
+                    SHZ_PREFETCH(&hdr);
+                    shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
+                    sPvrFrameBytes += 32;
+                    float vx[4] = {x0, x1, x0, x1};
+                    float vy[4] = {y0, y0, y1, y1};
+                    for (int i = 0; i < 4; i++) {
+                        pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
+                        vert->flags = (i == 3) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+                        vert->x = vx[i]; vert->y = vy[i]; vert->z = z;
+                        vert->u = 0; vert->v = 0;
+                        vert->argb = 0x00FFFFFF; /* white color, zero alpha */
+                        vert->oargb = 0;
+                        pvr_dr_commit(vert);
+                    }
+                    sPvrFrameBytes += 4 * 32;
                 }
-                sPvrFrameBytes += 4 * 32;
             }
 
             /* --- Pass 1: TEX0 (alpha-blended, establishes alpha mask) --- */
@@ -3170,7 +3237,7 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
                 int pth0 = texID->pow2Info.padded_h;
                 u32 pfmt0 = pvr_tex_fmt_for(texID->fmt, texID->siz);
                 pvr_poly_cxt_t cxt;
-                pvr_poly_cxt_txr(&cxt, sPvrCurrentList,
+                pvr_poly_cxt_txr(&cxt, defer_mt ? PVR_LIST_TR_POLY : sPvrCurrentList,
                                   pfmt0,// | PVR_TXRFMT_NONTWIDDLED,
                                   ptw0, pth0, texID->id, pvr_tex_filter());
                 cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
@@ -3190,10 +3257,15 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
                 cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
                 pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
                 pvr_poly_compile(&hdr, &cxt);
-                SHZ_PREFETCH(&hdr);
-                shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-                sPvrFrameBytes += 32;
-                pvr_submit_quad_tex(x0, y0, x1, y1, z, u0, v0_uv, u1, v1_uv, argb_p1, flip);
+                if (defer_mt) {
+                    tr_defer_quad_2d(&hdr, x0, y0, x1, y1, MT_PASS_Z(1),
+                                     u0, v0_uv, u1, v1_uv, argb_p1);
+                } else {
+                    SHZ_PREFETCH(&hdr);
+                    shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
+                    sPvrFrameBytes += 32;
+                    pvr_submit_quad_tex(x0, y0, x1, y1, z, u0, v0_uv, u1, v1_uv, argb_p1, flip);
+                }
             }
 
             /* --- Pass 2: TEX1 (masked by FB alpha via DESTALPHA) --- */
@@ -3231,7 +3303,7 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
                 int pth1 = tex1->pow2Info.padded_h;
                 u32 pfmt1 = pvr_tex_fmt_for(tex1->fmt, tex1->siz);
                 pvr_poly_cxt_t cxt;
-                pvr_poly_cxt_txr(&cxt, sPvrCurrentList,
+                pvr_poly_cxt_txr(&cxt, defer_mt ? PVR_LIST_TR_POLY : sPvrCurrentList,
                                   pfmt1,// | PVR_TXRFMT_NONTWIDDLED,
                                   ptw1, pth1, tex1->id, pvr_tex_filter());
                 cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
@@ -3251,17 +3323,22 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
                 cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
                 pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
                 pvr_poly_compile(&hdr, &cxt);
-                SHZ_PREFETCH(&hdr);
-                shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-                sPvrFrameBytes += 32;
-                pvr_submit_quad_tex(x0, y0, x1, y1, z, ut0, vt0, ut1, vt1, argb_p2, flip);
+                if (defer_mt) {
+                    tr_defer_quad_2d(&hdr, x0, y0, x1, y1, MT_PASS_Z(2),
+                                     ut0, vt0, ut1, vt1, argb_p2);
+                } else {
+                    SHZ_PREFETCH(&hdr);
+                    shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
+                    sPvrFrameBytes += 32;
+                    pvr_submit_quad_tex(x0, y0, x1, y1, z, ut0, vt0, ut1, vt1, argb_p2, flip);
+                }
             }
 
             /* --- Pass 3: Constant offset (masked by FB alpha) --- */
             {
                 if (argb_p3 & 0x00FFFFFF) {
                     pvr_poly_cxt_t cxt;
-                    pvr_poly_cxt_col(&cxt, sPvrCurrentList);
+                    pvr_poly_cxt_col(&cxt, defer_mt ? PVR_LIST_TR_POLY : sPvrCurrentList);
                     cxt.gen.culling = PVR_CULLING_NONE;
                     cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
                     cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
@@ -3270,22 +3347,28 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
                     cxt.blend.dst = PVR_BLEND_ONE;
                     pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
                     pvr_poly_compile(&hdr, &cxt);
-                    SHZ_PREFETCH(&hdr);
-                    shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-                    sPvrFrameBytes += 32;
-                    float vx[4] = {x0, x1, x0, x1};
-                    float vy[4] = {y0, y0, y1, y1};
-                    for (int i = 0; i < 4; i++) {
-                        pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
-                        vert->flags = (i == 3) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                        vert->x = vx[i]; vert->y = vy[i]; vert->z = z;
-                        vert->u = 0; vert->v = 0;
-                        vert->argb = argb_p3; vert->oargb = 0;
-                        pvr_dr_commit(vert);
+                    if (defer_mt) {
+                        tr_defer_quad_2d(&hdr, x0, y0, x1, y1, MT_PASS_Z(3),
+                                         0.0f, 0.0f, 0.0f, 0.0f, argb_p3);
+                    } else {
+                        SHZ_PREFETCH(&hdr);
+                        shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
+                        sPvrFrameBytes += 32;
+                        float vx[4] = {x0, x1, x0, x1};
+                        float vy[4] = {y0, y0, y1, y1};
+                        for (int i = 0; i < 4; i++) {
+                            pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
+                            vert->flags = (i == 3) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
+                            vert->x = vx[i]; vert->y = vy[i]; vert->z = z;
+                            vert->u = 0; vert->v = 0;
+                            vert->argb = argb_p3; vert->oargb = 0;
+                            pvr_dr_commit(vert);
+                        }
+                        sPvrFrameBytes += 4 * 32;
                     }
-                    sPvrFrameBytes += 4 * 32;
                 }
             }
+            #undef MT_PASS_Z
 
             sPvrNeedHeader = 1;
             PROF_END(sPF_Draw2D);
@@ -3355,7 +3438,8 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
     int pth = texID->pow2Info.padded_h;
     u32 pfmt = pvr_tex_fmt_for(texID->fmt, texID->siz);
     pvr_poly_cxt_t cxt;
-    pvr_poly_cxt_txr(&cxt, sPvrCurrentList,
+    int defer2d = (sPvrCurrentList == PVR_LIST_OP_POLY) && (sAlphaTestEnabled || sBlendingEnabled);
+    pvr_poly_cxt_txr(&cxt, defer2d ? PVR_LIST_TR_POLY : sPvrCurrentList,
                       pfmt,// | PVR_TXRFMT_NONTWIDDLED,
                       ptw, pth,
                       texID->id,
@@ -3387,11 +3471,22 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
     }
     pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
     pvr_poly_compile(&hdr, &cxt);
+    s2DDepth += OVERLAY_Z_STEP;
+    if (defer2d) {
+        if (tr_defer_quad_2d(&hdr, x0, y0, x1, y1, s2DDepth * 1e6f,
+                             u0, v0_uv, u1, v1_uv, argb)) {
+            PROF_END(sPF_Draw2D);
+            return;
+        }
+        /* Buffer full -> live fallback. The header was compiled for the TR
+           list; submitting it into the open OP list hard-locks the TA.
+           Recompile for the live list first. */
+        cxt.list_type = sPvrCurrentList;
+        pvr_poly_compile(&hdr, &cxt);
+    }
     SHZ_PREFETCH(&hdr);
     shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
     sPvrFrameBytes += 32;
-    s2DDepth += OVERLAY_Z_STEP;
-
     pvr_submit_quad_tex(x0, y0, x1, y1, s2DDepth * 1e6f, u0, v0_uv, u1, v1_uv, argb, flip);
     PROF_END(sPF_Draw2D);
 }
@@ -4650,8 +4745,26 @@ static void handle_fillrect(u32 w0, u32 w1) {
            TR autosort would otherwise push them behind 3D geometry.
            On OP list, draw order is correct so no boost needed. */
         float z = (cycleType == 3 && sPvrCurrentList == PVR_LIST_TR_POLY) ? s2DDepth * 1e4f : s2DDepth;
-        pvr_submit_quad_col(x0, y0, x1 + 2.0f * SCREEN_SCALE, y1 + 2.0f * SCREEN_SCALE, z,
-            (a << 24) | (r << 16) | (g << 8) | b);
+        u32 fargb = ((u32)a << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
+        if (sPvrCurrentList == PVR_LIST_OP_POLY && a < 255 && (sBlendingEnabled || sDoAdd == 3)) {
+            /* translucent fill during the OP phase (menu fades): defer to TR.
+               GEQUAL vs the incrementing 2D z keeps paint order both ways. */
+            pvr_poly_cxt_t cxt;
+            pvr_poly_cxt_col(&cxt, PVR_LIST_TR_POLY);
+            cxt.gen.culling = PVR_CULLING_NONE;
+            cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
+            cxt.gen.specular = 0;
+            cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
+            cxt.depth.write = PVR_DEPTHWRITE_DISABLE;
+            pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
+            pvr_poly_compile(&hdr, &cxt);
+            if (tr_defer_quad_2d(&hdr, x0, y0, x1 + 2.0f * SCREEN_SCALE, y1 + 2.0f * SCREEN_SCALE,
+                                 z * 1e6f, 0.0f, 0.0f, 0.0f, 0.0f, fargb)) {
+                PROF_END(sPF_Draw2D);
+                return;
+            }
+        }
+        pvr_submit_quad_col(x0, y0, x1 + 2.0f * SCREEN_SCALE, y1 + 2.0f * SCREEN_SCALE, z, fargb);
     }
     PROF_END(sPF_Draw2D);
 }
