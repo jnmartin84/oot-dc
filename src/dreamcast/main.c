@@ -471,6 +471,10 @@ Gfx* gXluDLStart = NULL;
    each region keeps its own internal ordering. */
 static u8 sPauseBackdropZ = 0;
 static u8 sPauseBackdropDim = 255; /* backdrop brightness 0..255; set by 'PD'+level marker */
+/* Nearest 3D depth (largest 1/w) emitted so far THIS frame; reset per frame.
+   A translucent fill deferred out of the OPA phase is placed just in front of
+   it (see handle_fillrect). */
+static float sFrameMaxZ = 0.0f;
 static u8 sPauseMenuNear = 0;
 static u8 sPauseUINear = 0;
 #define PAUSE_MENU_ZSCALE 256.0f
@@ -3714,6 +3718,7 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
             mv->x = src->screen_x;
             mv->y = src->screen_y;
             mv->z = pvr_z;
+            if (pvr_z > sFrameMaxZ) sFrameMaxZ = pvr_z;
             mv->u = u * inv_texW;
             mv->v = v * inv_texH;
             mv->argb = packed_color;
@@ -3724,6 +3729,7 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
                 mv->x = src->screen_x;
                 mv->y = src->screen_y;
                 mv->z = pvr_z;
+                if (pvr_z > sFrameMaxZ) sFrameMaxZ = pvr_z;
                 mv->u = u * inv_texW;
                 mv->v = v * inv_texH;
                 mv->argb = packed_color;
@@ -3736,6 +3742,7 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
             dst->vert.y = src->screen_y;
             dst->vert.z = pvr_z;
             if (pvr_z > max_z) max_z = pvr_z;
+            if (pvr_z > sFrameMaxZ) sFrameMaxZ = pvr_z;
             dst->texture.u = u * inv_texW;
             dst->texture.v = v * inv_texH;
             dst->color.packed = packed_color;
@@ -4383,8 +4390,18 @@ static void handle_fillrect(u32 w0, u32 w1) {
         float z = (cycleType == 3 && sPvrCurrentList == PVR_LIST_TR_POLY) ? s2DDepth * 1e6f : s2DDepth;
         u32 fargb = ((u32)a << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
         if (sPvrCurrentList == PVR_LIST_OP_POLY && a < 255 && (sBlendingEnabled || sDoAdd == 3)) {
-            /* translucent fill during the OP phase (menu fades): defer to TR.
-               GEQUAL vs the incrementing 2D z keeps paint order both ways. */
+            /* Translucent fill during the OP phase: defer to TR. Depth = just in
+               front of the nearest 3D depth emitted SO FAR this frame, so the fill
+               covers what was drawn before it and is covered by what comes after,
+               like an RDP fill in list order. The skybox filter
+               (Environment_DrawSkyboxFilters: fog-coloured, alpha from fogNear,
+               drawn right after the skybox) must darken the sky only; at the 2D
+               band it sat over the finished frame and darkened the world too --
+               until alpha hit 255 and the opaque path took over (spin-charge
+               'ground goes bright' inflection; foggy areas 950<fogNear<980
+               permanently dimmed). A fade drawn after the world lands in front
+               of the world. Nothing 3D yet: old 2D band. */
+            float zf = (sFrameMaxZ > 0.0f) ? sFrameMaxZ * (1.0f + 1.0f / 256.0f) : z * 1e6f;
             pvr_poly_cxt_t cxt;
             pvr_poly_cxt_col(&cxt, PVR_LIST_TR_POLY);
             cxt.gen.culling = PVR_CULLING_NONE;
@@ -4395,7 +4412,7 @@ static void handle_fillrect(u32 w0, u32 w1) {
             pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
             pvr_poly_compile(&hdr, &cxt);
             if (tr_defer_quad_2d(&hdr, x0, y0, x1 + 2.0f * SCREEN_SCALE, y1 + 2.0f * SCREEN_SCALE,
-                                 z * 1e6f, 0.0f, 0.0f, 0.0f, 0.0f, fargb)) {
+                                 zf, 0.0f, 0.0f, 0.0f, 0.0f, fargb)) {
                 PROF_END(sPF_Draw2D);
                 return;
             }
@@ -4978,6 +4995,7 @@ void pc_process_displaylist(Gfx* dl) {
     sPvrScisX1 = 0; sPvrScisY1 = 0;
     sPvrScisX2 = DC_FB_W; sPvrScisY2 = DC_FB_H;
     pvr_submit_user_clip(0, 0, DC_FB_W, DC_FB_H);
+    sFrameMaxZ = 0.0f;
     pvr_set_zclip(0);
 
     rsp_reset();
