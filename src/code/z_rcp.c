@@ -1594,7 +1594,7 @@ void Gfx_SetupFrame(GraphicsContext* gfxCtx, u8 r, u8 g, u8 b) {
 //            gDPSetEnvColor(OVERLAY_DISP++, 0, 0, 0, 0xff);
   //          gDPSetPrimColor(OVERLAY_DISP++, 0, 0, 0, 0, 0, 0xff);
 //            gDPSetFillColor(OVERLAY_DISP++, (1<<16) | 1);//(GPACK_RGBA5551(r, g, b, 1) << 16) | GPACK_RGBA5551(r, g, b, 1));
-        gDPSetFillColor(POLY_OPA_DISP++, (GPACK_RGBA5551(r, g, b, 1) << 16) | GPACK_RGBA5551(r, g, b, 1));
+        gDPSetFillColor(OVERLAY_DISP++, (GPACK_RGBA5551(r, g, b, 1) << 16) | GPACK_RGBA5551(r, g, b, 1));
                   gDPFillRectangle(OVERLAY_DISP++, 0, 0, gScreenWidth - 1, letterboxSize - 1);
             gDPFillRectangle(OVERLAY_DISP++, 0, gScreenHeight - letterboxSize, gScreenWidth - 1, gScreenHeight - 1);
             gDPPipeSync(OVERLAY_DISP++);

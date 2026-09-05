@@ -538,6 +538,7 @@ typedef struct {
     int pad0W, pad0H;
     u32 cms0, cmt0;
     int needs_stencil;              /* 1 = alpha depends on texture (fire mask) */
+    int sx1, sy1, sx2, sy2;         /* scissor (PVR user clip) in effect when captured */
 } MtxBatch;
 
 #define MAX_MTX_VERTS   4096
@@ -562,6 +563,7 @@ static float sTexSubst1 = 1.0f;
 typedef struct {
     int start, count;
     pvr_poly_hdr_t hdr;  /* compiled header for this batch */
+    int sx1, sy1, sx2, sy2; /* scissor (PVR user clip) in effect when captured */
 } PtBatch;
 
 #define MAX_PT_VERTS   6144
@@ -582,6 +584,7 @@ typedef struct {
     int start, count;
     pvr_poly_hdr_t hdr;  /* compiled header for this batch */
     int is_mod;          /* lens bracket: 1 = textured modifier batch, 2 = untextured */
+    int sx1, sy1, sx2, sy2; /* scissor (PVR user clip) in effect when captured */
 } TrBatch;
 
 #define MAX_TR_VERTS   6144
@@ -1818,6 +1821,7 @@ mode2 |= ((sPvrCurrentList > PVR_LIST_OP_MOD) << PVR_TA_PM2_ALPHA_SHIFT);
            FB alpha is non-zero (inside the mask shape). */
 static void flush_multitex_pass2(void) {
     if (sMultiTexVertCount == 0) return;
+    int cx1 = -1, cy1 = -1, cx2 = -1, cy2 = -1;   /* user clip currently submitted on this list */
 
     /* Finalize last batch count */
     if (sMultiTexBatchCount > 0) {
@@ -1828,6 +1832,11 @@ static void flush_multitex_pass2(void) {
     for (int b = 0; b < sMultiTexBatchCount; b++) {
         MtxBatch* batch = &sMultiTexBatches[b];
         if (batch->count < 3) continue;
+        /* Re-assert the scissor the batch was captured under (see flush_pt_buffer). */
+        if (batch->sx1 != cx1 || batch->sy1 != cy1 || batch->sx2 != cx2 || batch->sy2 != cy2) {
+            cx1 = batch->sx1; cy1 = batch->sy1; cx2 = batch->sx2; cy2 = batch->sy2;
+            pvr_submit_user_clip(cx1, cy1, cx2, cy2);
+        }
 
         /* Non-stencil path: simple lerp (ground detail, skybox, water) */
         if (!batch->needs_stencil) {
@@ -2284,7 +2293,8 @@ static void mtx_ensure_batch(void) {
 
     if (sMultiTexBatchCount > 0) {
         MtxBatch* cur = &sMultiTexBatches[sMultiTexBatchCount - 1];
-        if (cur->texID->id == entry->id && cur->cms == cms && cur->cmt == cmt)
+        if (cur->texID->id == entry->id && cur->cms == cms && cur->cmt == cmt &&
+            cur->sx1 == sPvrScisX1 && cur->sy1 == sPvrScisY1 && cur->sx2 == sPvrScisX2 && cur->sy2 == sPvrScisY2)
             return;  /* current batch still matches */
         cur->count = sMultiTexVertCount - cur->start;
     }
@@ -2293,6 +2303,7 @@ static void mtx_ensure_batch(void) {
     MtxBatch* b = &sMultiTexBatches[sMultiTexBatchCount++];
     b->start = sMultiTexVertCount;
     b->count = 0;
+    b->sx1 = sPvrScisX1; b->sy1 = sPvrScisY1; b->sx2 = sPvrScisX2; b->sy2 = sPvrScisY2;
     b->texID = entry;
     b->padW  = entry->pow2Info.padded_w;
     b->padH  = entry->pow2Info.padded_h;
@@ -2365,6 +2376,7 @@ static void pt_start_batch(void) {
     PtBatch* b = &sPtBatches[sPtBatchCount++];
     b->start = sPtVertCount;
     b->count = 0;
+    b->sx1 = sPvrScisX1; b->sy1 = sPvrScisY1; b->sx2 = sPvrScisX2; b->sy2 = sPvrScisY2;
 
     /* Compile header for PT list using current texture/color state */
     if ((sCurrentboundTexture != NULL) && (sCurrentboundTexture->id != 0)) {
@@ -2417,6 +2429,7 @@ static void pt_start_batch(void) {
    Called at end of frame after TR list is finished. */
 static void flush_pt_buffer(void) {
     if (sPtVertCount == 0) return;
+    int cx1 = -1, cy1 = -1, cx2 = -1, cy2 = -1;   /* user clip currently submitted on this list */
 
     /* Finalize last batch count */
     if (sPtBatchCount > 0) {
@@ -2428,6 +2441,13 @@ static void flush_pt_buffer(void) {
     for (int b = 0; b < sPtBatchCount; b++) {
         PtBatch* batch = &sPtBatches[b];
         if (batch->count < 3) continue;
+        /* Re-assert the scissor the batch was captured under. N64: View_ApplyLetterbox
+           scissors OPA/XLU to exclude the letterbox bars and the RDP never draws
+           there; every deferred flush must carry its own user clip (32px tiles). */
+        if (batch->sx1 != cx1 || batch->sy1 != cy1 || batch->sx2 != cx2 || batch->sy2 != cy2) {
+            cx1 = batch->sx1; cy1 = batch->sy1; cx2 = batch->sx2; cy2 = batch->sy2;
+            pvr_submit_user_clip(cx1, cy1, cx2, cy2);
+        }
 
         /* Submit the pre-compiled header */
         SHZ_PREFETCH(&batch->hdr);
@@ -2470,6 +2490,7 @@ static void tr_start_batch(void) {
     b->start = sTrVertCount;
     b->count = 0;
     b->is_mod = 0;
+    b->sx1 = sPvrScisX1; b->sy1 = sPvrScisY1; b->sx2 = sPvrScisX2; b->sy2 = sPvrScisY2;
 
     if (sLensBracket) {
         /* Lens bracket: compile a modifier-affected header; param set 2
@@ -2582,6 +2603,8 @@ static int tr_defer_quad_2d(const pvr_poly_hdr_t* hdr, float x0, float y0, float
            multiple of 6) whose verts are still the tail of the array. */
         if (!prev->is_mod && prev->count > 0 && (prev->count % 6) == 0 &&
             prev->start + prev->count == sTrVertCount &&
+            prev->sx1 == sPvrScisX1 && prev->sy1 == sPvrScisY1 &&
+            prev->sx2 == sPvrScisX2 && prev->sy2 == sPvrScisY2 &&
             memcmp(&prev->hdr, hdr, sizeof(*hdr)) == 0) {
             b = prev;
             b->count += 6;
@@ -2595,6 +2618,7 @@ static int tr_defer_quad_2d(const pvr_poly_hdr_t* hdr, float x0, float y0, float
         b->count = 6;
         b->is_mod = 0;
         b->hdr = *hdr;
+        b->sx1 = sPvrScisX1; b->sy1 = sPvrScisY1; b->sx2 = sPvrScisX2; b->sy2 = sPvrScisY2;
     }
     /* same corner layout as pvr_submit_quad_tex, as two tris */
     static const int ix[6] = { 0, 1, 2, 2, 1, 3 };
@@ -2617,6 +2641,7 @@ static int tr_defer_quad_2d(const pvr_poly_hdr_t* hdr, float x0, float y0, float
    after OP is finished and the TR list is open. */
 static void flush_deferred_tr(void) {
     if (sTrVertCount == 0) return;
+    int cx1 = -1, cy1 = -1, cx2 = -1, cy2 = -1;   /* user clip currently submitted on this list */
 
     if (sTrBatchCount > 0) {
         TrBatch* last = &sTrBatches[sTrBatchCount - 1];
@@ -2627,6 +2652,11 @@ static void flush_deferred_tr(void) {
     for (int b = 0; b < sTrBatchCount; b++) {
         TrBatch* batch = &sTrBatches[b];
         if (batch->count < 3) continue;
+        /* Re-assert the scissor the batch was captured under (see flush_pt_buffer). */
+        if (batch->sx1 != cx1 || batch->sy1 != cy1 || batch->sx2 != cx2 || batch->sy2 != cy2) {
+            cx1 = batch->sx1; cy1 = batch->sy1; cx2 = batch->sx2; cy2 = batch->sy2;
+            pvr_submit_user_clip(cx1, cy1, cx2, cy2);
+        }
 
         SHZ_PREFETCH(&batch->hdr);
         shz_sq_memcpy32_1(pvr_dr_target(sDrState), &batch->hdr);
@@ -4833,10 +4863,14 @@ static void handle_fillrect(u32 w0, u32 w1) {
 
     if (sDoAdd == 3 || a > 0) {
         s2DDepth += OVERLAY_Z_STEP;
-        /* Only boost Z for fill-cycle rects on the TR list (letterbox).
-           TR autosort would otherwise push them behind 3D geometry.
+        /* Fill-cycle rects on the TR list (the letterbox bars, head of OVERLAY):
+           same depth scale as every other 2D draw (texrects, ortho quads and
+           no-Z-test TR polys are all s2DDepth*1e6) so paint order among 2D is
+           monotonic under TR autosort: the bars sort over everything XLU drew
+           before them and under the HUD drawn after. The old 1e4 left XLU-phase
+           2D and no-Z effects (Zelda's Lullaby clouds) in front of the bars.
            On OP list, draw order is correct so no boost needed. */
-        float z = (cycleType == 3 && sPvrCurrentList == PVR_LIST_TR_POLY) ? s2DDepth * 1e4f : s2DDepth;
+        float z = (cycleType == 3 && sPvrCurrentList == PVR_LIST_TR_POLY) ? s2DDepth * 1e6f : s2DDepth;
         u32 fargb = ((u32)a << 24) | ((u32)r << 16) | ((u32)g << 8) | b;
         if (sPvrCurrentList == PVR_LIST_OP_POLY && a < 255 && (sBlendingEnabled || sDoAdd == 3)) {
             /* translucent fill during the OP phase (menu fades): defer to TR.
