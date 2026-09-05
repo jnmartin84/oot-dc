@@ -200,8 +200,14 @@ static void WaitForVBlank(void) {
 
 
 #define MAX_TEX_SIZE 512
+/* Staging capacity in texels. In-game textures are TMEM-bounded (tiny once
+   padded) and the largest real user is the prerender-BG path: 320x240 padded
+   to 512x256. The old 512x512 sizing wasted 256KB of main RAM we need back
+   (KOS fs_vmu mallocs ~2x the save file transiently; we were right at the
+   edge, 2026-09-04). Guards below fail loud if anything ever exceeds this. */
+#define TEXBUF_TEXELS (512 * 256)
 //512
-u16 __attribute__((aligned(32))) sTexDataBuf[MAX_TEX_SIZE * MAX_TEX_SIZE];
+u16 __attribute__((aligned(32))) sTexDataBuf[TEXBUF_TEXELS];
 //u16 __attribute__((aligned(32))) sTexDataBuf16[MAX_TEX_SIZE * MAX_TEX_SIZE];
 
 static u8 __attribute__((aligned(32))) sSwapBuf[256 * 256 * 2];
@@ -691,6 +697,63 @@ static inline u32 pvr_tex_fmt_for(u32 fmt, u32 siz) {
     return tex_needs_multi_alpha(fmt) ? PVR_TXRFMT_ARGB4444 : PVR_TXRFMT_ARGB1555;
 }
 
+/* ==== VisMono (flashback desaturation), source-side ==========================
+   The N64 effect reads the finished framebuffer as a texture, converts each
+   pixel to intensity and lerps env(black)->prim by it, blended by prim alpha.
+   PVR can't read the cfb usefully, so the same transform is applied to every
+   COLOR SOURCE instead (user's design, 2026-09-04): all texels at conversion
+   time, all final vertex/texrect/fill colors at emit time, and the fog color.
+   Any blend of grays is gray, so the frame is monochrome by construction; only
+   relative brightness can differ slightly (luma of a product vs product of
+   lumas). On toggle/change the texture cache (and the BG cache) is wiped so
+   everything re-bakes -- naive per-frame rebake if the alpha ramps (sepia
+   cutscene cmd); optimize later if it's too slow. */
+static u32 sVisMonoWant = 0;   /* 0xAARRGGBB prim (A = blend alpha); 0 = off */
+static u32 sVisMonoCur = 0;    /* currently baked into textures/colors */
+
+void dc_vismono_set(u8 r, u8 g, u8 b, u8 a) {
+    sVisMonoWant = a ? (((u32)a << 24) | ((u32)r << 16) | ((u32)g << 8) | b) : 0;
+}
+
+static inline u32 vismono_argb(u32 argb) {
+    if (!sVisMonoCur)
+        return argb;
+    u32 a = sVisMonoCur >> 24;
+    u32 pr = (sVisMonoCur >> 16) & 0xFF, pg = (sVisMonoCur >> 8) & 0xFF, pb = sVisMonoCur & 0xFF;
+    u32 r = (argb >> 16) & 0xFF, g = (argb >> 8) & 0xFF, b = argb & 0xFF;
+    u32 I = (2 * r + 4 * g + b + 3) / 7;
+    u32 tr = (pr * I + 127) / 255, tg = (pg * I + 127) / 255, tb = (pb * I + 127) / 255;
+    r = (tr * a + r * (255 - a) + 127) / 255;
+    g = (tg * a + g * (255 - a) + 127) / 255;
+    b = (tb * a + b * (255 - a) + 127) / 255;
+    return (argb & 0xFF000000u) | (r << 16) | (g << 8) | b;
+}
+
+/* In-place transform of converted texels (only two formats exist in this
+   pipeline; BG uses ARGB1555 too). Alpha bits untouched. */
+static void vismono_bake_texels(u16* p, u32 n, u32 pvrfmt) {
+    if (!sVisMonoCur)
+        return;
+    if (pvrfmt == PVR_TXRFMT_ARGB4444) {
+        for (u32 i = 0; i < n; i++) {
+            u16 v = p[i];
+            u32 r = (v >> 8) & 0xF, g = (v >> 4) & 0xF, b = v & 0xF;
+            u32 c = vismono_argb(0xFF000000u | (r * 17 << 16) | (g * 17 << 8) | (b * 17));
+            p[i] = (v & 0xF000) | ((((c >> 16) & 0xFF) >> 4) << 8) |
+                   ((((c >> 8) & 0xFF) >> 4) << 4) | ((c & 0xFF) >> 4);
+        }
+    } else { /* ARGB1555 */
+        for (u32 i = 0; i < n; i++) {
+            u16 v = p[i];
+            u32 r = (v >> 10) & 0x1F, g = (v >> 5) & 0x1F, b = v & 0x1F;
+            u32 c = vismono_argb(0xFF000000u | (((r << 3) | (r >> 2)) << 16) |
+                                 (((g << 3) | (g >> 2)) << 8) | ((b << 3) | (b >> 2)));
+            p[i] = (v & 0x8000) | ((((c >> 16) & 0xFF) >> 3) << 10) |
+                   ((((c >> 8) & 0xFF) >> 3) << 5) | ((c & 0xFF) >> 3);
+        }
+    }
+}
+
 static void swap_bytes_64(u8* data, size_t size) {
     for (size_t i = 0; i + 7 < size; i += 8) {
         u8 tmp;
@@ -959,7 +1022,7 @@ static TextureCacheEntry* get_texture(u32 addr, u32 fmt, u32 siz, u32 width, u32
     else
         tex_bytes = width * height * 4;
 
-    if (padded_w * padded_h > MAX_TEX_SIZE * MAX_TEX_SIZE) {
+    if (padded_w * padded_h > TEXBUF_TEXELS) {
         PROF_END(sPF_TexUpload);
         PROF_END(sPF_Tex);
         if (!dirtyNode) {
@@ -1043,6 +1106,8 @@ static TextureCacheEntry* get_texture(u32 addr, u32 fmt, u32 siz, u32 width, u32
         }
         break;
     }
+
+    vismono_bake_texels(tex_data, (u32)(width * height), pvr_tex_fmt_for(fmt, siz));
 
     if (width != padded_w || height != padded_h)
         pad_texture_to_pow2(tex_data, width, height, padded_w, padded_h);
@@ -2889,11 +2954,6 @@ static void lens_draw_visible(float x0, float y0, float x1, float y1,
     sPvrFrameBytes += 32;
     s2DDepth += OVERLAY_Z_STEP;
     pvr_submit_quad_tex(x0, y0, x1, y1, s2DDepth * 1e6f, lu0, lv0, lu1, lv1, argb, 0);
-    if (sLensLog < 24) {
-        sLensLog++;
-        printf("LENS: visible (%d,%d)-(%d,%d) argb=%08lx\n",
-               (int)x0, (int)y0, (int)x1, (int)y1, (unsigned long)argb);
-    }
 }
 
 static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
@@ -3245,7 +3305,7 @@ static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
     u8 cg = (u8)(cc_out[1] * 255.0f);
     u8 cb = (u8)(cc_out[2] * 255.0f);
     u8 ca = (u8)(cc_out[3] * 255.0f);
-    u32 argb = (ca << 24) | (cr << 16) | (cg << 8) | cb;
+    u32 argb = vismono_argb((ca << 24) | (cr << 16) | (cg << 8) | cb);
 
     /* Lens of Truth passes: prim-depth 0 + G_ZS_PRIM on a mirrored I8 texrect.
        Z_UPD variants ARM the circle modifier volume (+ draw the red shroud in
@@ -3864,6 +3924,9 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
                         ((u32)MORPHA_BODY_G << 8) | (u32)MORPHA_BODY_B;
         }
 #endif
+        packed_color = vismono_argb(packed_color);
+        fog_oargb = vismono_argb(fog_oargb);
+
         float u = (src->u - uls) * u_shift_mul;
         float v = (src->v - ult) * v_shift_mul;
 
@@ -4576,6 +4639,11 @@ static void handle_fillrect(u32 w0, u32 w1) {
         a = (uint8_t)(sFillColor[3] * 255.0f);
     }
 
+    {
+        u32 _fc = vismono_argb(((u32)a << 24) | ((u32)r << 16) | ((u32)g << 8) | b);
+        r = (_fc >> 16) & 0xFF; g = (_fc >> 8) & 0xFF; b = _fc & 0xFF;
+    }
+
     if (sDoAdd == 3 || a > 0) {
         s2DDepth += OVERLAY_Z_STEP;
         /* Only boost Z for fill-cycle rects on the TR list (letterbox).
@@ -4635,11 +4703,18 @@ static void handle_bg(u32 w0, u32 w1) {
             u_scale = (float)imgW / (float)pw;
             v_scale = (float)imgH / (float)ph;
 
+            if (pw * ph > TEXBUF_TEXELS) {
+                if (sOomLogged < 64) { sOomLogged++; printf("PVROOM: bg %ux%u exceeds texbuf\n", (unsigned)pw, (unsigned)ph); }
+                PROF_END(sPF_Draw2D);
+                return;
+            }
             u16* tex_data = sTexDataBuf;
             for (u32 i = 0; i < (u32)(imgW * imgH); i++) {
                 u16 col16 = pixels[i];
                 tex_data[i] = ((col16 & 1) << 15) | (col16 >> 1);
             }
+
+            vismono_bake_texels(tex_data, (u32)(imgW * imgH), PVR_TXRFMT_ARGB1555);
 
             if ((u32)imgW != pw || (u32)imgH != ph)
                 pad_texture_to_pow2(tex_data, imgW, imgH, pw, ph);
@@ -4766,7 +4841,6 @@ static void walk_dl(Gfx* dl, int depth) {
                 sPvrNeedHeader = 1;
             } else if (w1 == 0x4C4E5331u) {
                 /* 'LNS1': lens-actor bracket begin (only if a mask armed the circle) */
-                if (sLensLog < 40) { sLensLog++; printf("LENS: LNS1 mask=%d\n", sLensMaskSeen); }
                 if (sLensMaskSeen) {
                     flush_triangles();
                     sPtBuffering = 0;
@@ -4780,18 +4854,6 @@ static void walk_dl(Gfx* dl, int depth) {
                     flush_triangles();
                     sLensBracket = 0;
                     sPvrNeedHeader = 1;
-                }
-                if (sLensLog < 40) {
-                    int modb = 0, modv = 0;
-                    for (int bi = 0; bi < sTrBatchCount; bi++)
-                        if (sTrBatches[bi].is_mod) {
-                            modb++;
-                            modv += (sTrBatches[bi].count > 0) ? sTrBatches[bi].count
-                                                              : (sTrVertCount - sTrBatches[bi].start);
-                        }
-                    sLensLog++;
-                    printf("LENS: LNS0 mod_batches=%d mod_verts=%d trv=%d show=%d\n",
-                           modb, modv, sTrVertCount, sLensShow);
                 }
             }
             continue;
@@ -5019,7 +5081,15 @@ static void walk_dl(Gfx* dl, int depth) {
                     sFogColor[1] = (((w1 >> 16) & 0xFF) / 255.0f);
                     sFogColor[2] = (((w1 >>  8) & 0xFF) / 255.0f);
                     sFogColor[3] = (w1 & 0xFF) / 255.0f;
-                    pvr_vertfog_color(sFogColor[3], sFogColor[0], sFogColor[1], sFogColor[2]);
+                    {
+                        u32 _fog = vismono_argb(0xFF000000u |
+                            ((u32)(u8)(sFogColor[0] * 255.0f) << 16) |
+                            ((u32)(u8)(sFogColor[1] * 255.0f) << 8) |
+                             (u32)(u8)(sFogColor[2] * 255.0f));
+                        pvr_vertfog_color(sFogColor[3], ((_fog >> 16) & 0xFF) * (1.0f / 255.0f),
+                                          ((_fog >> 8) & 0xFF) * (1.0f / 255.0f),
+                                          (_fog & 0xFF) * (1.0f / 255.0f));
+                    }
                     sFogColChanged = 1;
                     sPvrColDirty = 1;
                     sPvrTexDirty = 1;
@@ -5094,6 +5164,22 @@ void pc_process_displaylist(Gfx* dl) {
         pvrOOM = 0;
         printf("TEXWIPE: pvrOOM end-of-frame\n");
         flush_texture_cache_external();
+    }
+
+    /* VisMono toggle/fade: rebake everything through the transform. Naive:
+       a ramping alpha (sepia cmd) re-wipes every frame -- revisit if slow. */
+    if (sVisMonoWant != sVisMonoCur) {
+        static u32 sVisMonoLog = 0;
+        sVisMonoCur = sVisMonoWant;
+        flush_texture_cache_external();
+        if (sBgCachedTexID) { pvr_mem_free(sBgCachedTexID); sBgCachedTexID = 0; }
+        sEmitCacheDirty = 1;
+        sPvrTexDirty = 1;
+        sPvrColDirty = 1;
+        if (sVisMonoLog < 12) {
+            sVisMonoLog++;
+            printf("VISMONO: %08lx\n", (unsigned long)sVisMonoCur);
+        }
     }
 
  //   int count = sVblCounter;
@@ -5217,11 +5303,6 @@ void pc_process_displaylist(Gfx* dl) {
             memcpy(w, ((const u8*)&mtri) + 32, 32); pvr_dr_commit(w);
         }
                 pvr_list_finish();
-        if (sLensLog < 24) {
-            sLensLog++;
-            printf("LENS: volume c=(%d,%d) r=(%d,%d) show=%d\n",
-                   (int)sLensCx, (int)sLensCy, (int)sLensRx, (int)sLensRy, sLensShow);
-        }
     }
 
     uint64 _tFlush1 = timer_ns_gettime64();

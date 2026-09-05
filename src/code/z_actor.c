@@ -2750,14 +2750,6 @@ void Actor_DrawLensActors(PlayState* play, s32 numInvisibleActors, Actor** invis
                   numInvisibleActors);
 
 #ifdef __DREAMCAST__
-    {
-        static u32 sDcLensDrawLog = 0;
-        if (sDcLensDrawLog < 16) {
-            sDcLensDrawLog++;
-            printf("LENS: game draw %d lens actors, mode=%d\n",
-                   (int)numInvisibleActors, (int)play->roomCtx.curRoom.lensMode);
-        }
-    }
     gDCLensBracket(POLY_XLU_DISP++, 0x4C4E5331); /* 'LNS1' */
 #endif
 

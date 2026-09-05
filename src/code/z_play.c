@@ -1221,7 +1221,6 @@ void Play_Draw(PlayState* this) {
             TransitionFade_Draw(&this->transitionFadeFlash, &gfxP);
 
 #ifndef LINUX
-            /* DC: skip VisMono (lens of truth desaturation) reads cfb as texture, doesn't work on yet */
 #if PLATFORM_N64
             if (gVisMonoColor.a != 0)
 #else
@@ -1230,6 +1229,16 @@ void Play_Draw(PlayState* this) {
             {
                 gPlayVisMono.vis.primColor.rgba = gVisMonoColor.rgba;
                 VisMono_Draw(&gPlayVisMono, &gfxP);
+            }
+#else
+            /* DC: VisMono reads the cfb as a texture, which PVR can't do.
+               Instead hand the mono color to the renderer, which applies the
+               same intensity->prim transform to every color SOURCE (texels at
+               conversion, colors at emit). See vismono_* in dreamcast/main.c. */
+            {
+                extern void dc_vismono_set(u8 r, u8 g, u8 b, u8 a);
+                dc_vismono_set(gVisMonoColor.r, gVisMonoColor.g, gVisMonoColor.b,
+                               (gVisMonoColor.a > 0) ? gVisMonoColor.a : 0);
             }
 #endif
 
