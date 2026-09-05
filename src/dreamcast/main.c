@@ -327,14 +327,6 @@ static LoadedVertex* sClipOutv[4];
 // Clip-space coords — only needed for near-plane clipping (rare)
 static float __attribute__((aligned(32))) sClipSpace[UCODE_MAX_VERTS][4];
 
-#if 0
-typedef struct {
-    float u_scale; // original_width / padded_width
-    float v_scale; // original_height / padded_height
-    int padded_w;
-    int padded_h;
-} TexPow2Info;
-#endif
 
 float global_dummy[4] = {1.0f, 1.0f, 1.0f, 1.0f};
 float global_combined[4];
@@ -1235,16 +1227,6 @@ static void mtx_mul(float res[4][4], const float a[4][4], const float b[4][4]) {
 }
 
 static void rsp_reset(void) {
-#if 0
-    {   /* DIAG: report previous frame's fog factor range (near vs far) on change */
-        static int lastMin = -2, lastMax = -2;
-        if (sFogDbgMax >= 0 && (sFogDbgMin != lastMin || sFogDbgMax != lastMax)) {
-            lastMin = sFogDbgMin; lastMax = sFogDbgMax;
-            printf("FOGRANGE near=%d far=%d\n", sFogDbgMin, sFogDbgMax);
-        }
-        sFogDbgMin = 999; sFogDbgMax = -1;
-    }
-#endif
     rsp.modelview_stack_size = 1;
     mtx_identity(rsp.modelview_stack[0]);
     mtx_identity(rsp.P_matrix);
@@ -1999,287 +1981,6 @@ static void flush_multitex_pass2(void) {
     sMultiTexBatchCount = 0;
 }
 
-#if 0
-void pvr_ensure_mtx_hdr_nostencil(MtxBatch* batch, pvr_poly_hdr_t* hdr) {
-    u32 bfmt = pvr_tex_fmt_for(batch->texID->fmt, batch->texID->siz);
-    pvr_poly_cxt_t cxt;
-    pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY,
-                      bfmt | PVR_TXRFMT_NONTWIDDLED,
-                      batch->padW, batch->padH,
-                      batch->texID->id, pvr_tex_filter());
-    cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
-    {
-        int uvc = 0, uvf = 0;
-        if (batch->cms & 2) uvc |= PVR_UVCLAMP_U;
-        if (batch->cmt & 2) uvc |= PVR_UVCLAMP_V;
-        if (batch->cms & 1) uvf |= PVR_UVFLIP_U;
-        if (batch->cmt & 1) uvf |= PVR_UVFLIP_V;
-        cxt.txr.uv_clamp = uvc; cxt.txr.uv_flip = uvf; 
-    }
-    cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
-    cxt.gen.specular = 1;
-    // TODO fog
-    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
-    cxt.depth.write = PVR_DEPTHWRITE_DISABLE;
-    cxt.blend.src = PVR_BLEND_SRCALPHA;
-    cxt.blend.dst = PVR_BLEND_INVSRCALPHA;
-    cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
-    pvr_poly_compile(&hdr, &cxt);
-    SHZ_PREFETCH(&hdr);
-}
-
-void pvr_ensure_mtx_hdr_stencil_pass_a(MtxBatch* batch, pvr_poly_hdr_t* hdr) {
-    pvr_poly_cxt_t cxt;
-    pvr_poly_cxt_col(&cxt, PVR_LIST_TR_POLY);
-    cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
-    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
-    cxt.depth.write = PVR_DEPTHWRITE_DISABLE;
-    cxt.blend.src = PVR_BLEND_DESTCOLOR;
-    cxt.blend.dst = PVR_BLEND_ZERO;
-    pvr_poly_compile(&hdr, &cxt);
-    SHZ_PREFETCH(&hdr);
-}
-
-void pvr_ensure_mtx_hdr_stencil_pass_b(MtxBatch* batch, pvr_poly_hdr_t* hdr) {
-    u32 fmt0 = pvr_tex_fmt_for(batch->tex0->fmt, batch->tex0->siz);
-    pvr_poly_cxt_t cxt;
-    pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY, fmt0 | PVR_TXRFMT_NONTWIDDLED, batch->pad0W, batch->pad0H, batch->tex0->id,
-                     pvr_tex_filter());
-    cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
-    {
-        int uvc = 0, uvf = 0;
-        if (batch->cms0 & 2)
-            uvc |= PVR_UVCLAMP_U;
-        if (batch->cmt0 & 2)
-            uvc |= PVR_UVCLAMP_V;
-        if (batch->cms0 & 1)
-            uvf |= PVR_UVFLIP_U;
-        if (batch->cmt0 & 1)
-            uvf |= PVR_UVFLIP_V;
-        cxt.txr.uv_clamp = uvc;
-        cxt.txr.uv_flip = uvf;
-    }
-    cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
-    cxt.gen.specular = 1;
-    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
-    cxt.depth.write = PVR_DEPTHWRITE_DISABLE;
-    cxt.blend.src = PVR_BLEND_SRCALPHA;
-    cxt.blend.dst = PVR_BLEND_INVSRCALPHA;
-    cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
-    pvr_poly_compile(&hdr, &cxt);
-    SHZ_PREFETCH(&hdr);
-}
-
-void pvr_ensure_mtx_hdr_stencil_pass_c(MtxBatch* batch, pvr_poly_hdr_t* hdr) {
-    u32 bfmt = pvr_tex_fmt_for(batch->texID->fmt, batch->texID->siz);
-    pvr_poly_cxt_t cxt;
-    pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY, bfmt | PVR_TXRFMT_NONTWIDDLED, batch->padW, batch->padH, batch->texID->id,
-                     pvr_tex_filter());
-    cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
-    {
-        int uvc = 0, uvf = 0;
-        if (batch->cms & 2)
-            uvc |= PVR_UVCLAMP_U;
-        if (batch->cmt & 2)
-            uvc |= PVR_UVCLAMP_V;
-        if (batch->cms & 1)
-            uvf |= PVR_UVFLIP_U;
-        if (batch->cmt & 1)
-            uvf |= PVR_UVFLIP_V;
-        cxt.txr.uv_clamp = uvc;
-        cxt.txr.uv_flip = uvf;
-    }
-    cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
-    cxt.gen.specular = 1;
-    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
-    cxt.depth.write = PVR_DEPTHWRITE_DISABLE;
-    cxt.blend.src = PVR_BLEND_DESTALPHA;
-    cxt.blend.dst = PVR_BLEND_ONE;
-    cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
-    pvr_poly_compile(&hdr, &cxt);
-    SHZ_PREFETCH(&hdr);
-}
-
-void mtx_vertex_loop_step_a(MtxBatch* batch) {
-    for (int i = batch->start; i < batch->start + batch->count; i += 3) {
-        for (int j = 0; j < 3 && (i + j) < batch->start + batch->count; j++) {
-            MtxVert* mv = &sMultiTexVerts[i + j];
-            pvr_vertex_t* vert = (pvr_vertex_t*)pvr_dr_target(sDrState);
-            vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-            vert->x = mv->x;
-            vert->y = mv->y;
-            vert->z = mv->z;
-            vert->u = 0;
-            vert->v = 0;
-            vert->argb = 0x00FFFFFF; /* white color, zero alpha */
-            vert->oargb = 0;
-            pvr_dr_commit(vert);
-        }
-    }
-}
-
-void mtx_vertex_loop_vtxcoloruv(MtxBatch* batch, int tile) {
-    for (int i = batch->start; i < batch->start + batch->count; i += 3) {
-        for (int j = 0; j < 3 && (i + j) < batch->start + batch->count; j++) {
-            MtxVert* mv = &sMultiTexVerts[i + j];
-            pvr_vertex_t* vert = (pvr_vertex_t*)pvr_dr_target(sDrState);
-            vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-            vert->x = mv->x;
-            vert->y = mv->y;
-            vert->z = mv->z;
-            if (tile == 1) {
-            vert->u = mv->u;
-            vert->v = mv->v;
-            } else {
-            vert->u = mv->u0;
-            vert->v = mv->v0;
-            }
-            vert->argb = mv->argb;
-            vert->oargb = mv->oargb;
-            pvr_dr_commit(vert);
-        }
-    }
-}
-
-/* ---- Multi-texture flush: 3-pass dest-alpha stencil ----
-   Pass A (alpha clear): DESTCOLOR/ZERO with white+alpha=0 — clears FB alpha
-           in the triangle region while preserving existing color.
-   Pass B (mask):        Tile 0 with SRCALPHA/INVSRCALPHA — renders mask shape,
-           establishes FB alpha from tile 0's alpha.
-   Pass C (fire):        Tile 1 with DESTALPHA/ONE — fire added only where
-           FB alpha is non-zero (inside the mask shape). */
-static void flush_multitex_pass2(void) {
-    pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
-
-{
-    sMultiTexVertCount  = 0;
-    sMultiTexBatchCount = 0;
-    return;
-}
-    if (sMultiTexVertCount == 0) return;
-
-    /* Finalize last batch count */
-    if (sMultiTexBatchCount > 0) {
-        MtxBatch* last = &sMultiTexBatches[sMultiTexBatchCount - 1];
-        last->count = sMultiTexVertCount - last->start;
-    }
-
-    for (int b = 0; b < sMultiTexBatchCount; b++) {
-        MtxBatch* batch = &sMultiTexBatches[b];
-        if (batch->count < 3) continue;
-
-        /* Non-stencil path: simple lerp (ground detail, skybox, water) */
-        if (!batch->needs_stencil) {
-            pvr_ensure_mtx_hdr_nostencil(batch, &hdr);
-            shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-            mtx_vertex_loop_vtxcoloruv(batch, 1);
-            continue;
-        }
-
-        /* --- Stencil path for masked effects (fire/torch) --- */
-
-        /* --- Pass A: Alpha clear — DESTCOLOR/ZERO with white+alpha=0 --- */
-        {
-            pvr_ensure_mtx_hdr_stencil_pass_a(batch, &hdr);
-            shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-            mtx_vertex_loop_step_a(batch);
-        }
-
-        /* --- Pass B: Mask (tile 0) — SRCALPHA/INVSRCALPHA --- */
-        if (batch->tex0) {
-            pvr_ensure_mtx_hdr_stencil_pass_b(batch, &hdr);
-            shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-            mtx_vertex_loop_vtxcoloruv(batch, 0);
-        }
-
-        /* --- Pass C: Fire (tile 1) — DESTALPHA/ONE (masked by FB alpha) --- */
-        {
-            pvr_ensure_mtx_hdr_stencil_pass_c(batch, &hdr);
-            shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-            mtx_vertex_loop_vtxcoloruv(batch, 1);
-        }
-    }
-
-    sMultiTexVertCount  = 0;
-    sMultiTexBatchCount = 0;
-}
-#endif
-#if 0
-/* ---- Multi-texture pass 2: flush buffered triangles onto TR list ---- */
-static void flush_multitex_pass2(void) {
-    if (sMultiTexVertCount == 0) return;
-
-    /* Finalize last batch count */
-    if (sMultiTexBatchCount > 0) {
-        MtxBatch* last = &sMultiTexBatches[sMultiTexBatchCount - 1];
-        last->count = sMultiTexVertCount - last->start;
-    }
-
-    for (int b = 0; b < sMultiTexBatchCount; b++) {
-        MtxBatch* batch = &sMultiTexBatches[b];
-        if (batch->count < 3) continue;
-
-        u32 bfmt = pvr_tex_fmt_for(batch->texID->fmt, batch->texID->siz);
-        pvr_poly_cxt_t cxt;
-        pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY,
-                          bfmt | PVR_TXRFMT_NONTWIDDLED,
-                          batch->padW, batch->padH,
-                          batch->texID->id, pvr_tex_filter());
-        cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
-
-        int uv_clamp = 0, uv_flip = 0;
-        if (batch->cms & 2) uv_clamp |= PVR_UVCLAMP_U;
-        if (batch->cmt & 2) uv_clamp |= PVR_UVCLAMP_V;
-        if (batch->cms & 1) uv_flip  |= PVR_UVFLIP_U;
-        if (batch->cmt & 1) uv_flip  |= PVR_UVFLIP_V;
-        cxt.txr.uv_clamp = uv_clamp;
-        cxt.txr.uv_flip  = uv_flip;
-
-        cxt.gen.culling = PVR_CULLING_NONE;
-        cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
-        cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
-        cxt.depth.write = PVR_DEPTHWRITE_DISABLE;
-        cxt.blend.src = PVR_BLEND_SRCALPHA;
-        cxt.blend.dst = PVR_BLEND_INVSRCALPHA;
-        cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
-
-        cxt.gen.specular = 1;
-        if (sFogChanged != 2) {
-        cxt.gen.fog_type = (!sDoAdd & (sGeometryMode & G_FOG)) ? PVR_FOG_VERTEX : PVR_FOG_DISABLE;
-        } else {
-            cxt.gen.fog_type = (!sDoAdd & (sGeometryMode & G_FOG)) ? PVR_FOG_TABLE : PVR_FOG_DISABLE;
-        }
-        pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
-        pvr_poly_compile(&hdr, &cxt);
-        SHZ_PREFETCH(&hdr);
-        shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-
-        for (int i = batch->start; i < batch->start + batch->count; i += 3) {
-            for (int j = 0; j < 3 && (i + j) < batch->start + batch->count; j++) {
-                 MtxVert* mv = &sMultiTexVerts[i + j];
-                pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
-                vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                vert->x = mv->x;
-                vert->y = mv->y;
-                vert->z = mv->z;
-                if (mv->z > max_z) max_z = mv->z;
-                vert->u = mv->u;
-                vert->v = mv->v;
-                vert->argb = mv->argb;
-                vert->oargb = mv->oargb;
-                pvr_dr_commit(vert);
-            }
-        }
-    }
-
-    sMultiTexVertCount  = 0;
-    sMultiTexBatchCount = 0;
-}
-#endif
 
 /* Start or continue a multi-tex batch for the given tile 1 texture */
 static void mtx_ensure_batch(void) {
@@ -2340,27 +2041,6 @@ static void __attribute__((unused)) pvr_ensure_tr_list(void) {
     pvr_submit_user_clip(sPvrScisX1, sPvrScisY1, sPvrScisX2, sPvrScisY2);
 }
 
-#if 0
-/* One-way switch to PT list mid-scene (for alpha-tested geometry) */
-static void pvr_ensure_pt_list(void) {
-    if (sPvrOnPtList) return;
-    flush_triangles();
-    pvr_list_finish();                       /* finish current (OP or TR) */
-    if (!sPvrOnTrList) {
-        pvr_list_begin(PVR_LIST_TR_POLY);
-        pvr_list_finish();                   /* empty TR */
-        sPvrOnTrList = 1;
-    }
-    pvr_list_begin(PVR_LIST_PT_POLY);
-    pvr_dr_init(&sDrState);
-    sPvrCurrentList = PVR_LIST_PT_POLY;
-    sPvrOnPtList = 1;
-    sPvrColDirty = 1;
-    sPvrTexDirty = 1;
-    sPvrNeedHeader = 1;
-    pvr_submit_user_clip(sPvrScisX1, sPvrScisY1, sPvrScisX2, sPvrScisY2);
-}
-#endif
 
 /* Start a new PT batch with the current render state compiled for PT list.
    Called when sPtBuffering is active and header state changes. */
@@ -2840,166 +2520,6 @@ void flush_triangles(void) {
     sPvrNeedHeader = 1;
 }
 // ============================================================================
-#if 0
-static void draw_texrect(u32 w0, u32 w1, u32 w2, u32 w3, int flip) {
-    PROF_BEGIN(sPF_Draw2D);
-    flush_triangles();
-
-    u32 xh = (w0 >> 12) & 0xFFF;
-    u32 yh = (w0) & 0xFFF;
-    int tile = (w1 >> 24) & 0x7;
-    u32 xl = (w1 >> 12) & 0xFFF;
-    u32 yl = (w1) & 0xFFF;
-    s16 s = (s16)(w2 >> 16);
-    s16 t = (s16)(w2 & 0xFFFF);
-    s16 dsdx = (s16)(w3 >> 16);
-    s16 dtdy = (s16)(w3 & 0xFFFF);
-    u8 copy = 0;
-//    uint32_t saved_combine_mode = sComb
-    if ((sOtherModeH & (3U << G_MDSFT_CYCLETYPE)) == G_CYC_COPY) {
-        // Per RDP Command Summary Set Tile's shift s and this dsdx should be set to 4 texels
-        // Divide by 4 to get 1 instead
-        dsdx >>= 2;
-        copy = 1;
-        // Color combiner is turned off in copy mode
-//        gfx_dp_set_combine_mode(color_comb(0, 0, 0, G_CCMUX_TEXEL0), color_comb(0, 0, 0, G_ACMUX_TEXEL0));
-
-        // Per documentation one extra pixel is added in this modes to each edge
-    }
-
-    float width_orig = (xh - xl) / 4.0f;
-    float height_orig = (yh - yl) / 4.0f;
-    float x0 = xl / 4.0f * SCREEN_SCALE;
-    float y0 = yl / 4.0f * SCREEN_SCALE;
-    float x1 = xh / 4.0f * SCREEN_SCALE;
-    float y1 = yh / 4.0f * SCREEN_SCALE;
-    float s0 = s / 32.0f;
-    float t0 = t / 32.0f;
-    float dsdx_f = dsdx / 1024.0f;
-    float dtdy_f = dtdy / 1024.0f;
-    float s1, t1;
-
-    if (flip) {
-        s1 = s0 + (height_orig * dsdx_f);
-        t1 = t0 + (width_orig * dtdy_f);
-    } else {
-        s1 = s0 + (width_orig * dsdx_f);
-        t1 = t0 + (height_orig * dtdy_f);
-    }
-
-    /* Resolve texture for this tile (lazy or CI re-resolve) */
-    if (sTiles[tile].texDirty)
-        resolve_tile_texture(tile);
-    else if (sTiles[tile].fmt == G_IM_FMT_CI && sTiles[tile].texAddr != 0) {
-        TextureCacheEntry* entry = get_texture(sTiles[tile].texAddr, sTiles[tile].fmt, sTiles[tile].siz,
-                                      sTiles[tile].width, sTiles[tile].height, sTiles[tile].line,
-                                      sTiles[tile].texCms, sTiles[tile].texCmt, sTiles[tile].palette, 0);
-        if (entry != NULL)
-            sTiles[tile].texture = entry;
-    }
-
-    TextureCacheEntry* texID = sTiles[tile].texture;
-    if (!texID) texID = sCurrentboundTexture;
-    if (!texID) { PROF_END(sPF_Draw2D); return; }
-
-    /* Get UV scale for POW2 texture */
-    float tex_u_scale, tex_v_scale;
-    get_texture_uv_scale(texID, &tex_u_scale, &tex_v_scale);
-
-    float tw = (sTiles[tile].width > 0) ? (float)sTiles[tile].width : (float)sCurrentTexWidth;
-    float th = (sTiles[tile].height > 0) ? (float)sTiles[tile].height : (float)sCurrentTexHeight;
-    if (tw < 1.0f) tw = 1.0f;
-    if (th < 1.0f) th = 1.0f;
-
-    /* Subtract tile offset and normalize UVs */
-    float uls_pix = (float)sTiles[tile].uls / 4.0f;
-    float ult_pix = (float)sTiles[tile].ult / 4.0f;
-    s0 -= uls_pix; s1 -= uls_pix;
-    t0 -= ult_pix; t1 -= ult_pix;
-    if (copy) {
-        s1 += 1;
-        t1 += 1;
-    }
-
-    float u0 = (s0 / tw) * tex_u_scale;
-    float u1 = (s1 / tw) * tex_u_scale;
-    float v0_uv = (t0 / th) * tex_v_scale;
-    float v1_uv = (t1 / th) * tex_v_scale;
-
-    /* Evaluate combiner cycle 0 to determine vertex modulation color.
-       Texrects have no vertex shading so shade = white.
-       TEXEL0/TEXEL1 evaluate to 1.0, so the result is the color the
-       texture should be multiplied by (e.g. primColor for MODULATEIA_PRIM,
-       white for DECALRGBA). */
-    float shade_w[4] = { 1, 1, 1, 1 };
-    float cc_zero[4] = { 0, 0, 0, 0 };
-    float ccA[4], ccB[4], ccC[4], ccD[4], cc_out[4];
-    get_cc_input_4bit(sCombinerState.a0, shade_w, cc_zero, ccA);
-    get_cc_input_4bit(sCombinerState.b0, shade_w, cc_zero, ccB);
-    get_cc_input_5bit(sCombinerState.c0, shade_w, cc_zero, ccC);
-    get_cc_input_4bit(sCombinerState.d0, shade_w, cc_zero, ccD);
-    for (int i = 0; i < 4; i++) {
-        cc_out[i] = (ccA[i] - ccB[i]) * ccC[i] + ccD[i];
-        if (cc_out[i] < 0.0f) cc_out[i] = 0.0f;
-        if (cc_out[i] > 1.0f) cc_out[i] = 1.0f;
-    }
-    u8 cr = (u8)(cc_out[0] * 255.0f);
-    u8 cg = (u8)(cc_out[1] * 255.0f);
-    u8 cb = (u8)(cc_out[2] * 255.0f);
-    u8 ca = (u8)(cc_out[3] * 255.0f);
-    u32 argb = (ca << 24) | (cr << 16) | (cg << 8) | cb;
-//    if (copy)
-  //      argb = 0xffffffff;
-
-    /* Build one-off textured header for 2D overlay.
-       Each texrect gets an incrementing Z (s2DDepth) so PVR's
-       tile-based renderer resolves overlapping 2D draws in the
-       correct back-to-front order. */
-    int ptw = texID->pow2Info.padded_w;
-    int pth = texID->pow2Info.padded_h;
-    u32 pfmt = pvr_tex_fmt_for(texID->fmt, texID->siz);
-    pvr_poly_cxt_t cxt;
-    pvr_poly_cxt_txr(&cxt, sPvrCurrentList,
-                      pfmt | PVR_TXRFMT_NONTWIDDLED,
-                      ptw, pth,
-                      texID->id,
-                      pvr_tex_filter());
-    /* Use REPLACE when combiner says texture is unmodulated (white vertex),
-       MODULATEALPHA otherwise to multiply texture by the combiner color. */
-    cxt.txr.env = (argb == 0xFFFFFFFF) ? PVR_TXRENV_REPLACE : PVR_TXRENV_MODULATEALPHA;
-    /* Set UV clamp/flip from the tile's wrap modes (health/magic bars need this) */
-    {
-        u32 cms = sTiles[tile].cms;
-        u32 cmt = sTiles[tile].cmt;
-        int uv_clamp = 0;
-        int uv_flip = 0;
-        if (cms & 2) uv_clamp |= PVR_UVCLAMP_U;
-        if (cmt & 2) uv_clamp |= PVR_UVCLAMP_V;
-        if (cms & 1) uv_flip  |= PVR_UVFLIP_U;
-        if (cmt & 1) uv_flip  |= PVR_UVFLIP_V;
-        cxt.txr.uv_clamp = uv_clamp;
-        cxt.txr.uv_flip = uv_flip;
-    }
-    cxt.gen.culling = PVR_CULLING_NONE;
-    cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
-    cxt.depth.comparison = PVR_DEPTHCMP_GEQUAL;
-    cxt.depth.write = PVR_DEPTHWRITE_ENABLE;
-    if (sAlphaTestEnabled || sBlendingEnabled) {
-        cxt.blend.src = PVR_BLEND_SRCALPHA;
-        cxt.blend.dst = PVR_BLEND_INVSRCALPHA;
-        cxt.txr.alpha = PVR_TXRALPHA_ENABLE;
-    }
-    pvr_poly_hdr_t __attribute__((aligned(32))) hdr;
-    pvr_poly_compile(&hdr, &cxt);
-    SHZ_PREFETCH(&hdr);
-    shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
-    sPvrFrameBytes += 32;
-    s2DDepth += OVERLAY_Z_STEP;
-
-    pvr_submit_quad_tex(x0, y0, x1, y1, s2DDepth * 1e6f, u0, v0_uv, u1, v1_uv, argb, flip);
-    PROF_END(sPF_Draw2D);
-}
-#endif
 
 /* ==== Lens of Truth (modifier-volume masking) ================================
    N64 mechanism (z_actor.c Actor_DrawLensActors): a FULL-SCREEN texrect with
@@ -4009,19 +3529,6 @@ static void emit_cache_rebuild(void) {
 
 static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex* v2) {
     pvr_ensure_header();
-#if 0 /* DBG: dump routing/mode state once per distinct multitexture combine */
-    if (sMultiTexEnabled) {
-        static u64 sDbgLastMtxCombine = 0;
-        if (sCombineMode != sDbgLastMtxCombine) {
-            sDbgLastMtxCombine = sCombineMode;
-            printf("MTEX combine=%08lx%08lx omodeL=%08lx | blend=%d atest=%d mtex=%d list=%d pt=%d tr=%d depthW=%d alphaTex=%d | prim_a=%.2f env_a=%.2f\n",
-                   (unsigned long)(sCombineMode >> 32), (unsigned long)(sCombineMode & 0xFFFFFFFF),
-                   (unsigned long)sOtherModeL, sBlendingEnabled, sAlphaTestEnabled, sMultiTexEnabled,
-                   sPvrCurrentList, sPtBuffering, sTrBuffering, sDepthWriteEnabled,
-                   sCombinerState.alpha_uses_texture, sPrimColor[3], sEnvColor[3]);
-        }
-    }
-#endif
     if (sIsOrtho || (!sDepthTestEnabled && sPvrCurrentList == PVR_LIST_TR_POLY))
         s2DDepth += OVERLAY_Z_STEP;
 
@@ -4179,25 +3686,6 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
             mt_blend_a_inv = 255 - (u8)(blend_f * 255.0f);
             packed_color = (packed_color & 0x00ffffff) | (mt_blend_a_inv << 24);
         }
-#if 0 
-//MORPHA_PROBE
-        if (i == 0 && (sMultiTexEnabled || sDoAdd) && sEnvColor[2] > 0.9f && sEnvColor[0] < 0.05f) {
-            static u32 sMorphaProbe = 0;
-            if ((sMorphaProbe++ & 0x3F) == 0) {
-                float blend_f = (sPrimLodFrac > 0.001f) ? sPrimLodFrac : sEnvColor[3];
-                printf("MORPHA light=%d shade=(%d,%d,%d,%d) doadd=%d affine=%d "
-                       "A=(%.2f,%.2f,%.2f) B=(%.2f,%.2f,%.2f) packed=%08lx "
-                       "comb_a=%d do_mtex=%d blend_f=%.2f prim_a=%.2f env=(%.2f,%.2f,%.2f,%.2f)\n",
-                       (sGeometryMode & G_LIGHTING) != 0,
-                       src->color.r, src->color.g, src->color.b, src->color.a,
-                       sDoAdd, sEC_combAffine,
-                       sEC_combA[0], sEC_combA[1], sEC_combA[2],
-                       sEC_combB[0], sEC_combB[1], sEC_combB[2],
-                       (unsigned long)packed_color, dbg_comb_a, do_mtex, blend_f,
-                       sPrimColor[3], sEnvColor[0], sEnvColor[1], sEnvColor[2], sEnvColor[3]);
-            }
-        }
-#endif
 
         if (sPtBuffering && sPtVertCount < MAX_PT_VERTS) {
             MtxVert* mv = &sPtVerts[sPtVertCount++];
@@ -5221,15 +4709,6 @@ static void walk_dl(Gfx* dl, int depth) {
                     sFogMul = (int16_t) (w1 >> 16);
                     sFogOfs = (int16_t) w1;
                     sFogChanged = 1;
-#if 0
-                    {   /* DIAG: log fog mul/ofs when it changes */
-                        static int16_t lastMul = 0x7fff, lastOfs = 0x7fff;
-                        if (sFogMul != lastMul || sFogOfs != lastOfs) {
-                            lastMul = sFogMul; lastOfs = sFogOfs;
-                            printf("FOG mul=%d ofs=%d\n", (int)sFogMul, (int)sFogOfs);
-                        }
-                    }
-#endif
                 }
                 break;
             case G_DL:
@@ -5347,18 +4826,6 @@ static void walk_dl(Gfx* dl, int depth) {
                     sDamageB = (w1 >>  8) & 0xFF;
                     sDamageCapture = 0;
                 }
-#if 0
-                {   /* DIAG: log every distinct fog color + whether it's applied
-                       (the per-frame gate drops all but the first). */
-                    static u32 lastCol = 0xFFFFFFFF;
-                    if (w1 != lastCol) {
-                        lastCol = w1;
-                        printf("FOGCOL r=%d g=%d b=%d a=%d applied=%d\n",
-                               (int)((w1 >> 24) & 0xFF), (int)((w1 >> 16) & 0xFF),
-                               (int)((w1 >> 8) & 0xFF), (int)(w1 & 0xFF), (int)!sFogColChanged);
-                    }
-                }
-#endif
                 if (!sFogColChanged) {
                     sFogColor[0] = (((w1 >> 24) & 0xFF) / 255.0f);
                     sFogColor[1] = (((w1 >> 16) & 0xFF) / 255.0f);
