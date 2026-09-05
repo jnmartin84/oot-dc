@@ -1164,7 +1164,7 @@ static u8 sPauseWorldRedirect = false;
         _g->words.w0 = 0x424C4E44u;          \
         _g->words.w1 = (subop);              \
     } while (0)
-#define PAUSE_BACKDROP_DIM 24u /* backdrop brightness 0..255 (~9%); tune to taste */
+#define PAUSE_BACKDROP_DIM 48u /* backdrop brightness 0..255 (~19%); tuned on HW */
 #endif
 
 void Play_Draw(PlayState* this) {
@@ -1316,6 +1316,11 @@ void Play_Draw(PlayState* this) {
                    backdrop. 'PD'+level, level = brightness 0..255 (tune here). */
                 DC_PAUSE_BACKDROP_MARK(POLY_OPA_DISP, 0x50424731u);                 /* 'PBG1' on */
                 DC_PAUSE_BACKDROP_MARK(POLY_OPA_DISP, 0x50440000u | PAUSE_BACKDROP_DIM); /* 'PD'+dim */
+                /* The world's XLU geometry (path decals, water, effects) lives in the
+                   separate POLY_XLU list, walked after all of OPA (menu included):
+                   bracket it too or it stays undimmed (bright dirt paths). */
+                DC_PAUSE_BACKDROP_MARK(POLY_XLU_DISP, 0x50424731u);                 /* 'PBG1' on  (XLU) */
+                DC_PAUSE_BACKDROP_MARK(POLY_XLU_DISP, 0x50440000u | PAUSE_BACKDROP_DIM); /* 'PD'+dim (XLU) */
                 sPauseWorldRedirect = true;
             }
             /* fall through: draw skybox / scene / actors as the backdrop */
@@ -1485,6 +1490,7 @@ void Play_Draw(PlayState* this) {
             /* End the gZBuffer world DL and hand control back to the pool for the
                menu. (Measured: the world uses ~7KB of gZBuffer's 0x25800.) */
             DC_PAUSE_BACKDROP_MARK(POLY_OPA_DISP, 0x50424730u); /* 'PBG0' off */
+            DC_PAUSE_BACKDROP_MARK(POLY_XLU_DISP, 0x50424730u); /* 'PBG0' off (XLU) */
             gSPEndDisplayList(POLY_OPA_DISP++);
             gfxCtx->polyOpa = sPauseWorldPoolSaved;
             sPauseWorldRedirect = false;

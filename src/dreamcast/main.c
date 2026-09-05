@@ -619,6 +619,28 @@ static void pvr_vertfog_color(float a, float r, float g, float b) {
     PVR_SET(0x0B4, PVR_PACK_COLOR(a, r, g, b));
 }
 
+static inline u32 vismono_argb(u32 argb);
+/* Write the vertex-fog colour register from sFogColor (VisMono-baked). The
+   fog colour is a GLOBAL register that hardware vertex fog lerps toward, so
+   the pause-backdrop per-vertex dim never reaches fogged pixels: distant
+   terrain and the multitex second pass (fogged again, weight = blend) showed
+   the undimmed fog colour (orange patches at dusk). Dim it here for the
+   backdrop. There is one fog colour per frame and it is set at the top of
+   Play_Draw, BEFORE the PBG1/PD markers, so the PD handler calls this again
+   once the dim level is known; the menu draws with G_FOG off. */
+static void pvr_fog_register_update(void) {
+    u32 fog = vismono_argb(0xFF000000u |
+                           ((u32)(u8)(sFogColor[0] * 255.0f) << 16) |
+                           ((u32)(u8)(sFogColor[1] * 255.0f) << 8) |
+                            (u32)(u8)(sFogColor[2] * 255.0f));
+    u32 r = (fog >> 16) & 0xFF, g = (fog >> 8) & 0xFF, b = fog & 0xFF;
+    if (sPauseBackdropZ && sPauseBackdropDim < 255) {
+        u32 d = sPauseBackdropDim;
+        r = r * d / 255u; g = g * d / 255u; b = b * d / 255u;
+    }
+    pvr_vertfog_color(sFogColor[3], r * (1.0f / 255.0f), g * (1.0f / 255.0f), b * (1.0f / 255.0f));
+}
+
 /* PVR user tile clip  */
 static void pvr_submit_user_clip(int x1, int y1, int x2, int y2) {
     uint32_t __attribute__((aligned(32))) clip[8] = {0};
@@ -4595,6 +4617,7 @@ static void walk_dl(Gfx* dl, int depth) {
                 /* 'PD'+level: pause-backdrop brightness (low byte, 0..255) */
                 flush_triangles();
                 sPauseBackdropDim = w1 & 0xFFu;
+                pvr_fog_register_update();   /* fog colour was set before this marker */
             } else if (w1 == 0x4D454E31u) {
                 /* 'MEN1': pause menu pages near-depth bias on (over the world) */
                 flush_triangles();
@@ -4831,15 +4854,7 @@ static void walk_dl(Gfx* dl, int depth) {
                     sFogColor[1] = (((w1 >> 16) & 0xFF) / 255.0f);
                     sFogColor[2] = (((w1 >>  8) & 0xFF) / 255.0f);
                     sFogColor[3] = (w1 & 0xFF) / 255.0f;
-                    {
-                        u32 _fog = vismono_argb(0xFF000000u |
-                            ((u32)(u8)(sFogColor[0] * 255.0f) << 16) |
-                            ((u32)(u8)(sFogColor[1] * 255.0f) << 8) |
-                             (u32)(u8)(sFogColor[2] * 255.0f));
-                        pvr_vertfog_color(sFogColor[3], ((_fog >> 16) & 0xFF) * (1.0f / 255.0f),
-                                          ((_fog >> 8) & 0xFF) * (1.0f / 255.0f),
-                                          (_fog & 0xFF) * (1.0f / 255.0f));
-                    }
+                    pvr_fog_register_update();
                     sFogColChanged = 1;
                     sPvrColDirty = 1;
                     sPvrTexDirty = 1;
