@@ -56,7 +56,11 @@ void ConsoleLogo_PrintBuildInfo(Gfx** gfxP) {
 #endif
 
 void ConsoleLogo_Calc(ConsoleLogoState* this) {
-#if !PLATFORM_GC
+/* DC: run the N64-style logo sequence (fade in, spin, fade out) instead of the
+   GC base's immediate exit — the GC releases skip the N64 boot logo entirely
+   (one frame, fully covered by the alpha-255 fill). Init already sets
+   coverAlpha/addAlpha/visibleDuration for this path on every platform. */
+#if !PLATFORM_GC || defined(LINUX)
     if ((this->coverAlpha == 0) && (this->visibleDuration != 0)) {
         this->unk_1D4--;
         this->visibleDuration--;
