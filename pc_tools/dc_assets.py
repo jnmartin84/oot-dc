@@ -638,5 +638,18 @@ print(f"  ELFs: {BUILD_DIR}/*.elf  (use with -R for symbol references)")
 print(f"  Bins: {DATA_DIR}/*.bin   (load at runtime)")
 print(f"  Map:  {BUILD_DIR}/size_map.txt")
 
+if compile_failed or link_failed:
+    # Fail loudly: a partial asset build leaves the PREVIOUS .o/.elf/.bin for
+    # every segment that failed, so the game still links and runs with stale
+    # data for exactly those segments. That silently cost a long debugging
+    # session once (seven NPC objects kept their old textures after an asset
+    # change, while this script printed BUILD COMPLETE and exited 0).
+    print(f"\n=== BUILD FAILED ===")
+    print(f"  {len(compile_failed)} segment(s) failed to compile, "
+          f"{len(link_failed)} failed to link.")
+    print(f"  Outputs for those segments are STALE, not missing: the game will")
+    print(f"  build and run using whatever they contained before this run.")
+    raise SystemExit(1)
+
 print(f"\n=== BUILD COMPLETE ===")
 print(f"Now run: make -f Makefile.dc")

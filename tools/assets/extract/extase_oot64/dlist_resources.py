@@ -258,9 +258,18 @@ class TextureResource(Resource):
         self.resources_ci_list: list[TextureResource] = []
         """For TLUT "textures", the CI textures using it"""
 
-        if size_bytes % 8 == 0 and (file.alignment + range_start) % 8 == 0:
+        # The element type decides the byte order of the emitted C array: on a
+        # little-endian target a u32 array reverses 4 bytes at a time and a u64
+        # array 8, and the DC renderer's asset unswizzle assumes u64 throughout.
+        # Upstream also required the texture's ROM OFFSET to be 8-aligned and
+        # fell back to u32 otherwise, which made 152 textures across the seven
+        # generic-NPC objects (Kokiri and Hyrule townsfolk) decode with every
+        # pair of 4-byte groups swapped -- scrambled faces, hair and clothes.
+        # Each texture is its own C array here and we never match the original
+        # ROM layout, so the offset constrains nothing: prefer u64 on size alone.
+        if size_bytes % 8 == 0:
             self.alignment = 8
-        elif size_bytes % 4 == 0 and (file.alignment + range_start) % 4 == 0:
+        elif size_bytes % 4 == 0:
             self.alignment = 4
         else:
             raise NotImplementedError(

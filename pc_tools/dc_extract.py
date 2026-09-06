@@ -166,6 +166,7 @@ def extract(version, ext, jobs):
         ("extract_audio", [py, "tools/extract_audio.py", "-b", f"{ext}/baserom",
                            "-o", ext, "-v", version, "--read-xml"]),
     ]
+    log("extract: note -- this phase keys off assets/xml mtimes and has no force;\n        touch the relevant XML if you changed the extractor and expect new output")
     for name, cmd in steps:
         t = time.time()
         log(f"extract: {name}")
@@ -335,7 +336,12 @@ def main():
     ap.add_argument("--build-root", default="build",
                     help="output root for generated build inputs (default build/<version>)")
     ap.add_argument("-j", "--jobs", type=int, default=os.cpu_count() or 4)
-    ap.add_argument("--force", action="store_true", help="regenerate up-to-date outputs too")
+    ap.add_argument("--force", action="store_true",
+                help="regenerate up-to-date outputs in the textures/audio phases. "
+                     "Does NOT reach the extract phase: tools.assets.extract has no "
+                     "force flag and keys off the XML mtimes, so editing the extractor "
+                     "itself regenerates nothing. Touch the relevant assets/xml/**.xml "
+                     "to force those.")
     ap.add_argument("--only", default="tools,extract,meta,textures,text,audio",
                     help="comma list of phases to run")
     args = ap.parse_args()
