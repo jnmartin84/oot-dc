@@ -172,6 +172,10 @@ static MapSelectEntry sMapSelectEntries[] = {
       ENTR_DEKU_TREE_0 },
     { "67:" T(GFXP_HIRAGANA "ﾖｳｾｲﾉｷﾉ " GFXP_KATAKANA "ﾀﾞﾝｼﾞｮﾝ ﾎﾞｽ", "Fairy Tree Dungeon - Boss"), MapSelect_LoadGame,
       ENTR_DEKU_TREE_BOSS_0 },
+    // Spawn 1 (room 9, y = -1880): the flooded basement, normally only reached by
+    // returning from the boss. Lands you at the water without playing the dungeon.
+    { "67b:" T(GFXP_HIRAGANA "ﾖｳｾｲﾉｷﾉ " GFXP_KATAKANA "ﾁｶ", "Fairy Tree Dungeon - Basement"),
+      MapSelect_LoadGame, ENTR_DEKU_TREE_1 },
     { "68:" T(GFXP_KATAKANA "ﾄﾞﾄﾞﾝｺﾞ ﾀﾞﾝｼﾞｮﾝ", "Dondogo Dungeon"), MapSelect_LoadGame, ENTR_DODONGOS_CAVERN_0 },
     { "69:" T(GFXP_KATAKANA "ﾄﾞﾄﾞﾝｺﾞ ﾀﾞﾝｼﾞｮﾝ ﾎﾞｽ", "Dondogo Dungeon - Boss"), MapSelect_LoadGame,
       ENTR_DODONGOS_CAVERN_BOSS_0 },
