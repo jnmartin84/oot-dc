@@ -4535,7 +4535,19 @@ static void handle_bg(u32 w0, u32 w1) {
         SHZ_PREFETCH(&hdr);
         shz_sq_memcpy32_1(pvr_dr_target(sDrState), &hdr);
         sPvrFrameBytes += 32;
-        pvr_submit_quad_tex(0, 0, DC_FB_W, DC_FB_H, 0.0001f, 0, 0, u_scale, v_scale, 0xFFFFFFFF, 0);
+        /* Pause backdrop: the S2DEX background quad never goes through
+           emit_triangle_fast, so it missed the vertex dim and stayed at full
+           brightness behind the menu. This path is ONLY the JPEG-decoded
+           backgrounds -- a few shop interiors and some outdoor scenes (Market
+           outskirts / Hyrule Castle grounds). Most "prerendered-looking" indoor
+           rooms, Link's house included, are ordinary skybox geometry and dim
+           through the normal vertex path. */
+        u32 bg_argb = 0xFFFFFFFFu;
+        if (sPauseBackdropZ && sPauseBackdropDim < 255) {
+            u32 d = sPauseBackdropDim;
+            bg_argb = 0xFF000000u | (d << 16) | (d << 8) | d;
+        }
+        pvr_submit_quad_tex(0, 0, DC_FB_W, DC_FB_H, 0.0001f, 0, 0, u_scale, v_scale, bg_argb, 0);
     }
     PROF_END(sPF_Draw2D);
 }
