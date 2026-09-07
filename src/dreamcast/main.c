@@ -844,6 +844,28 @@ static void swap_bytes_64(u8* data, size_t size) {
     }
 }
 
+/* Gather a width x height block out of a strided source image, undoing the
+   big-endian u64 word order as we go (see swap_bytes_64). LoadTile can point a
+   tile at a sub-rectangle of a larger image, in which case the source rows are
+   `stride_bytes` apart while the tile only wants `row_bytes` of each. Reading
+   them contiguously instead shears the image diagonally -- that was the Deku
+   Tree water. Only CI8 used to handle this (convert_ci8_strided); doing it here
+   means every format gets it and the converters all see a contiguous block. */
+static void unswizzle_strided_be64(u8* dst, const void* src,
+                                   u32 row_bytes, u32 stride_bytes, u32 height) {
+    const u8* base = (const u8*)src;
+    u32 misalign = (u32)((uintptr_t)base & 7u);
+    const u8* aligned = base - misalign;
+    for (u32 t = 0; t < height; t++) {
+        u32 row0 = misalign + t * stride_bytes;
+        u8* out = dst + (size_t)t * row_bytes;
+        for (u32 i = 0; i < row_bytes; i++) {
+            u32 pos = row0 + i;
+            out[i] = aligned[(pos & ~7u) | (7u - (pos & 7u))];
+        }
+    }
+}
+
 void* pc_resolve_addr(u32 addr) {
     if (addr == 0)
         return NULL;
@@ -973,22 +995,6 @@ static void convert_ci8_nostride(u8* swapped, u16* tex_data, u32 count) {
     }
 }
 
-static void convert_ci8_strided(u8* src_data, u16* tex_data, int src_stride, int width, int height) {
-    u8* base = (u8*)src_data;
-    uintptr_t misalign = ((uintptr_t)base) & 7;
-    u8* aligned = base - misalign;
-    SHZ_PREFETCH(src_data);
-
-    for (u32 t = 0; t < height; t++) {
-        for (u32 s = 0; s < width; s++) {
-            u32 pos = misalign + t * src_stride + s;
-            u32 swapped_pos = (pos & ~7) | (7 - (pos & 7));
-            u8 idx2 = aligned[swapped_pos];
-            u16 tlut_val = sTLUT[idx2];
-            tex_data[t * width + s] = tlut_val;
-        }
-    }
-}
 
 static void convert_ci4(u8* swapped, u16* tex_data, int palette, u32 count) {
     for (u32 i = 0; i < count; i++) {
@@ -1109,8 +1115,17 @@ static TextureCacheEntry* get_texture(u32 addr, u32 fmt, u32 siz, u32 width, u32
     // dont do this memcpy shit
     // only problem is... you'd have to modify whatever creates the assets
     // and DONT OUTPUT AS U64
-    memcpy(swapped, src_data, tex_bytes);
-    swap_bytes_64(swapped, tex_bytes);
+    if (src_stride != 0 && src_stride != width) {
+        /* Tile is a sub-rectangle of a bigger image: pull out its rows. */
+        u32 bits = (siz == G_IM_SIZ_4b) ? 4u : (siz == G_IM_SIZ_8b) ? 8u
+                 : (siz == G_IM_SIZ_16b) ? 16u : 32u;
+        u32 row_bytes    = (width * bits + 7u) / 8u;
+        u32 stride_bytes = (src_stride * bits + 7u) / 8u;
+        unswizzle_strided_be64(swapped, src_data, row_bytes, stride_bytes, height);
+    } else {
+        memcpy(swapped, src_data, tex_bytes);
+        swap_bytes_64(swapped, tex_bytes);
+    }
 
     u32 count = width * height;
 
@@ -1164,10 +1179,7 @@ static TextureCacheEntry* get_texture(u32 addr, u32 fmt, u32 siz, u32 width, u32
         case G_IM_FMT_CI: {
             switch (siz) {
                 case G_IM_SIZ_8b:
-                    if (src_stride == 0 || src_stride == width)
-                        convert_ci8_nostride(swapped, tex_data, count);
-                    else
-                        convert_ci8_strided(src_data, tex_data, src_stride, width, height);
+                    convert_ci8_nostride(swapped, tex_data, count);
                     break;
                 case G_IM_SIZ_4b:
                     convert_ci4(swapped, tex_data, palette, count);
