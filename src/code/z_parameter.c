@@ -2175,9 +2175,19 @@ void Interface_LoadActionLabel(InterfaceContext* interfaceCtx, u16 action, s16 l
                           (uintptr_t)_do_action_staticSegmentRomStart + (action * DO_ACTION_TEX_SIZE),
                           DO_ACTION_TEX_SIZE, 0, &interfaceCtx->loadQueue, NULL, "../z_parameter.c", 2145);
         osRecvMesg(&interfaceCtx->loadQueue, NULL, OS_MESG_BLOCK);
+        // Every label lands at the same fixed address, so the address-keyed texture
+        // cache would keep serving whichever one was decoded there first -- the
+        // A-button label then reads wrong for the rest of the scene.
+        // Interface_LoadActionLabelB already does this; this path was missed.
+        gfx_texture_cache_invalidate(interfaceCtx->doActionSegment + (loadOffset * DO_ACTION_TEX_SIZE));
     } else {
+        void* labelDst;
+
         gSegments[7] = OS_K0_TO_PHYSICAL(interfaceCtx->doActionSegment);
-        func_80086D5C(SEGMENTED_TO_VIRTUAL(sDoActionTextures[loadOffset]), DO_ACTION_TEX_SIZE / 4);
+        labelDst = SEGMENTED_TO_VIRTUAL(sDoActionTextures[loadOffset]);
+        func_80086D5C(labelDst, DO_ACTION_TEX_SIZE / 4);
+        // Blanking the label rewrites the same buffer: invalidate it too.
+        gfx_texture_cache_invalidate(labelDst);
     }
 }
 
