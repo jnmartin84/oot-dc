@@ -367,6 +367,31 @@ static struct {
 } sCombinerState;
 
 TileDescriptor sTiles[8];
+
+/* What was most recently LOADED into each tile (LoadBlock / LoadTile), kept apart
+   from sTiles[].width/height, which SetTileSize overwrites with the RENDER WINDOW.
+   The two are not the same thing: the Triforce (object_triforce_spot) loads a
+   64x64 I8 block and then sets a 32x16 window with a 64-texel wrap mask; the
+   goddess aura sets a 64x32 window over a 64x64 load. On the RDP the wrap period
+   is the mask and the row stride is the tile's `line`, so those draws sample the
+   whole 64x64 image. Sizing the decode to the window instead reinterprets the
+   first rows of a 64-wide image as 32-wide (scrambled) and wraps at 32.
+   LoadBlock's SetTextureImage width is always 1, so its row width has to be
+   derived from the render tile's line at SetTileSize time; LoadTile knows its
+   rect explicitly. w == 0 -> unknown, only texels is valid. */
+typedef struct { int w, h; u32 stride; u32 texels; } TileLoadExtent;
+static TileLoadExtent sTileLoad[8];
+
+/* Texels per TMEM row for a tile's `line` (64-bit words per row). 32-bit textures
+   are split across the TMEM halves, so their line counts 2 bytes per texel. */
+static inline int tile_line_texels(u32 line, u32 siz) {
+    switch (siz) {
+        case G_IM_SIZ_4b:  return (int)line * 16;
+        case G_IM_SIZ_8b:  return (int)line * 8;
+        case G_IM_SIZ_16b: return (int)line * 4;
+        default:           return (int)line * 4;
+    }
+}
 static TextureCacheEntry* sCurrentboundTexture = NULL;
 static int sCurrentTexWidth = 1;
 static int sCurrentTexHeight = 1;
@@ -4134,11 +4159,13 @@ static void handle_settile(u32 w0, u32 w1) {
     if (tile != 7 && sTiles[7].tmem == sTiles[tile].tmem && sTiles[7].texAddr != 0) {
         sTiles[tile].texAddr = sTiles[7].texAddr;
         sTiles[tile].src_stride = sTiles[7].src_stride;
+        sTileLoad[tile] = sTileLoad[7];
     } else if (sTiles[tile].texAddr == 0) {
         for (int j = 0; j < 8; j++) {
             if (j != tile && sTiles[j].tmem == sTiles[tile].tmem && sTiles[j].texAddr != 0) {
                 sTiles[tile].texAddr = sTiles[j].texAddr;
                 sTiles[tile].src_stride = sTiles[j].src_stride;
+                sTileLoad[tile] = sTileLoad[j];
                 break;
             }
         }
@@ -4252,6 +4279,10 @@ static void handle_loadtile(u32 w0, u32 w1) {
     sTiles[tile].texCms = sTiles[tile].cms;
     sTiles[tile].texCmt = sTiles[tile].cmt;
     sTiles[tile].texDirty = 1;
+    sTileLoad[tile].w = w;
+    sTileLoad[tile].h = h;
+    sTileLoad[tile].stride = src_stride;
+    sTileLoad[tile].texels = (u32)(w * h);
 
     if (tile == 7 && sTiles[7].tmem == sTiles[0].tmem &&
         (sTiles[0].texAddr == 0 ||
@@ -4265,6 +4296,7 @@ static void handle_loadtile(u32 w0, u32 w1) {
         sTiles[0].texCms = sTiles[tile].texCms;
         sTiles[0].texCmt = sTiles[tile].texCmt;
         sTiles[0].texDirty = 1;
+        sTileLoad[0] = sTileLoad[tile];
         sCurrentUls = uls / 4.0f - 0.5f;
         sCurrentUlt = -0.5f;
         flush_triangles();
@@ -4290,11 +4322,28 @@ static void handle_settilesize(u32 w0, u32 w1) {
         eff_cms = G_TX_CLAMP;
     if (sTiles[tile].maskt == 0)
         eff_cmt = G_TX_CLAMP;
+
+    /* Loaded extent (see sTileLoad). LoadTile recorded its rect; for LoadBlock the
+       row width comes from this tile's `line` and the height from the texel count. */
+    int load_w = sTileLoad[tile].w, load_h = sTileLoad[tile].h;
+    u32 load_stride = sTileLoad[tile].stride;
+    if (load_w <= 0 && sTileLoad[tile].texels > 0 && sTiles[tile].line > 0) {
+        load_w = tile_line_texels(sTiles[tile].line, sTiles[tile].siz);
+        load_h = (load_w > 0) ? (int)(sTileLoad[tile].texels / (u32)load_w) : 0;
+        load_stride = 0;
+    }
+    u32 src_stride = sTiles[tile].src_stride;
+
     if (sTiles[tile].masks > 0) {
         int mask_w = 1 << sTiles[tile].masks;
         if (mask_w < tex_w) {
-            tex_w = mask_w;
+            tex_w = mask_w;                 /* window wider than the period: repeat */
             eff_cms &= ~G_TX_CLAMP;
+        } else if (mask_w > tex_w && !(eff_cms & G_TX_CLAMP)) {
+            /* Window NARROWER than the wrap period: the RDP still wraps at the
+               mask across the whole loaded row (Triforce 32-wide window, 64 mask).
+               Decode the full period, bounded by what was actually loaded. */
+            tex_w = (load_w > 0 && load_w < mask_w) ? load_w : mask_w;
         }
     }
     if (sTiles[tile].maskt > 0) {
@@ -4302,9 +4351,16 @@ static void handle_settilesize(u32 w0, u32 w1) {
         if (mask_h < tex_h) {
             tex_h = mask_h;
             eff_cmt &= ~G_TX_CLAMP;
+        } else if (mask_h > tex_h && !(eff_cmt & G_TX_CLAMP)) {
+            tex_h = (load_h > 0 && load_h < mask_h) ? load_h : mask_h;
         }
     }
+    /* Rows narrower than the loaded rows (a 32-texel period over 64-texel rows)
+       must be pulled out at the loaded stride, not read contiguously. */
+    if (load_w > 0 && tex_w < load_w)
+        src_stride = load_stride ? load_stride : (u32)load_w;
 
+    sTiles[tile].src_stride = src_stride;
     sTiles[tile].width = tex_w;
     sTiles[tile].height = tex_h;
     sTiles[tile].uls = uls;
@@ -4335,6 +4391,10 @@ static void handle_loadblock(u32 w0, u32 w1) {
     sTiles[tile].texCms = sTiles[tile].cms;
     sTiles[tile].texCmt = sTiles[tile].cmt;
     sTiles[tile].texDirty = 1;
+    sTileLoad[tile].w = 0;          /* row width unknown until SetTileSize sees `line` */
+    sTileLoad[tile].h = 0;
+    sTileLoad[tile].stride = 0;
+    sTileLoad[tile].texels = texels;
 
     if (sCurTexWidth > 0) {
         sTiles[tile].height = texels / sCurTexWidth;
@@ -4343,16 +4403,22 @@ static void handle_loadblock(u32 w0, u32 w1) {
         sTiles[tile].height = 1;
     }
 
+    /* A load into the TMEM slot tile 0 points at means tile 0 now samples THIS
+       data -- but through tile 0's OWN format, size, dims and clamp modes, which
+       are set by its own SetTile/SetTileSize, not by the load tile. Only the data
+       pointer (and load extent) moves. Copying fmt/siz/dims from the load tile
+       (siz = G_IM_SIZ_16b LOAD_BLOCK, SetTextureImage width = 1) was harmless in
+       the plain gsDPLoadTextureBlock flow, where SetTile(0)/SetTileSize(0) follow
+       and overwrite them, but a gsDPLoadMultiBlock into tmem 0x0000 for tile 1 is
+       followed by nothing for tile 0: it was left as a 1 x N "16-bit" texture and
+       decoded as garbage. Every such DL in the game was broken on HW 2026-09-08:
+       the goddess aura, the Triforce, the light ring (creation cutscene), the
+       time warp and the crystal light. */
     if (tile == 7 && sTiles[7].tmem == sTiles[0].tmem) {
         sTiles[0].texAddr = sCurTexAddr;
-        sTiles[0].fmt = sCurTexFmt;
-        sTiles[0].siz = sCurTexSiz;
-        sTiles[0].width = sCurTexWidth;
-        sTiles[0].height = sTiles[tile].height;
         sTiles[0].src_stride = 0;
-        sTiles[0].texCms = sTiles[tile].texCms;
-        sTiles[0].texCmt = sTiles[tile].texCmt;
         sTiles[0].texDirty = 1;
+        sTileLoad[0] = sTileLoad[tile];
     }
 }
 
