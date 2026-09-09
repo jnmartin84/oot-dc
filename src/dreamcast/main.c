@@ -1359,13 +1359,23 @@ static void recalc_MP(void) {
    modelview-top upper-3x3. Dotting a RAW s8 normal against column i then equals
    normalize(M*n) . worldDir_i (the current per-vertex result) without any
    per-vertex normalize -- the basis of the SF64-style fast path. */
-/* coeffs = normalize(M^T * worldDir) * recip127. Matches reference
-   CalculateNormalDir (M = modelview top); per-vector normalize divides out the
-   matrix scale; recip127 folded in so a dot with the RAW s8 normal gives cos. */
+/* Object-space direction of a world-space (post-modelview) direction d, scaled by
+   recip127 so a dot with the RAW s8 normal gives cos; the normalize divides out
+   the matrix scale.
+   Convention check: positions go clip_i = sum_k v_k * M[k][i] (row vector times
+   matrix, translation in row 3), so a world normal is n_w = n * R. Then
+   n_w . d = n . (R d), and (R d)_k = sum_i R[k][i] d_i = ROW k of R dotted with d.
+   This used the COLUMNS (R^T d = R^-1 d for a rotation): the light was rotated
+   the opposite way to the model. Rooms (identity model matrix) and light from
+   straight above were unaffected, which is why it survived; any yawed actor had
+   its horizontal light azimuth mirrored -- Link's back lit from the front with
+   the doorway behind the camera (HW side-by-side 2026-09-09). The lookat
+   vectors for texgen go through here too, so env maps were mirrored the same
+   way (the "lookat swap" noted against SF64). */
 static inline void obj_dir(const float* mv, const float* d, float* ox, float* oy, float* oz) {
-    float x = mv[0]*d[0] + mv[4]*d[1] + mv[8]*d[2];
-    float y = mv[1]*d[0] + mv[5]*d[1] + mv[9]*d[2];
-    float z = mv[2]*d[0] + mv[6]*d[1] + mv[10]*d[2];
+    float x = mv[0]*d[0] + mv[1]*d[1] + mv[2]*d[2];
+    float y = mv[4]*d[0] + mv[5]*d[1] + mv[6]*d[2];
+    float z = mv[8]*d[0] + mv[9]*d[1] + mv[10]*d[2];
     float len2 = x*x + y*y + z*z;
     float t = (len2 > 1e-12f) ? (recip127 / sqrtf(len2)) : 0.0f;
     *ox = x*t; *oy = y*t; *oz = z*t;
@@ -3396,16 +3406,31 @@ static void handle_vtx(u32 w0, u32 w1) {
                     shz_vec3_init((float)(s8)v->cn[0], (float)(s8)v->cn[1], (float)(s8)v->cn[2]));
                 float dotX = dt.x, dotY = dt.y;
                 if (sGeometryMode & G_TEXTURE_GEN_LINEAR) {
-                    float ax = (dotX < 0) ? -dotX : dotX;
-                    float ay = (dotY < 0) ? -dotY : dotY;
-                    dotX = 0.5f - ax * 0.25f - ax * ax * ax * 0.25f;
-                    dotY = 0.5f - ay * 0.25f - ay * ay * ay * 0.25f;
+                    /* Linear-in-angle mapping, monotonic over the whole normal
+                       range and oriented like the plain path (dot = -1 -> 0,
+                       dot = 0 -> 0.5, dot = +1 -> 1); same form as the MK64 port.
+                       The previous |dot| cubic folded the mapping at dot = 0, so
+                       every surface whose normal swept past perpendicular-to-
+                       lookat showed a crease that travelled across it as the
+                       model turned (Triforce side faces, HW 2026-09-09). */
+                    if (dotX >  1.0f) dotX =  1.0f; else if (dotX < -1.0f) dotX = -1.0f;
+                    if (dotY >  1.0f) dotY =  1.0f; else if (dotY < -1.0f) dotY = -1.0f;
+                    dotX = acosf(-dotX) * (1.0f / 3.14159265f);
+                    dotY = acosf(-dotY) * (1.0f / 3.14159265f);
                 } else {
                     dotX = dotX * 0.5f + 0.5f;
                     dotY = dotY * 0.5f + 0.5f;
                 }
-                d->u = dotX * rsp.texture_scale_s * tg_mul;
-                d->v = dotY * rsp.texture_scale_t * tg_mul;
+                /* The RSP maps the full [-1,1] normal range onto HALF the gsSPTexture
+                   scale (1024 S10.5 units x scale, = scale_raw/64 texels), the same
+                   mapping the MK64/SM64 ports and GLideN64 use. At the full scale the
+                   Triforce's finest tile (shift x4) ran to 125 texels over a 64-wide
+                   texture and wrapped once across the model: a hard seam that
+                   "scrolls" as it rotates (HW 2026-09-09). At half scale its 62.5
+                   maximum fits the texture, which is clearly what its author sized
+                   the scale for. */
+                d->u = dotX * rsp.texture_scale_s * (0.5f * tg_mul);
+                d->v = dotY * rsp.texture_scale_t * (0.5f * tg_mul);
             }
         }
     }
