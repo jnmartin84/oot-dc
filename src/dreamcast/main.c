@@ -559,6 +559,7 @@ typedef struct {
     int pad0W, pad0H;
     u32 cms0, cmt0;
     int needs_stencil;              /* 1 = alpha depends on texture (fire mask) */
+    int mask_tex1;                  /* 1 = the silhouette is tile 1, detail is tile 0 */
     int sx1, sy1, sx2, sy2;         /* scissor (PVR user clip) in effect when captured */
 } MtxBatch;
 
@@ -1937,6 +1938,19 @@ static void flush_multitex_pass2(void) {
         }
 
         /* --- Stencil path for masked effects (fire/torch) --- */
+        /* Pass B lays down the silhouette (and the base color); pass C adds the
+           detail inside it. Which tile is which comes from the alpha combiner,
+           not from the tile number -- see mtx_mask_is_tex1(). */
+        TextureCacheEntry* mask_tex   = batch->mask_tex1 ? batch->texID : batch->tex0;
+        TextureCacheEntry* detail_tex = batch->mask_tex1 ? batch->tex0  : batch->texID;
+        int  mask_padW  = batch->mask_tex1 ? batch->padW  : batch->pad0W;
+        int  mask_padH  = batch->mask_tex1 ? batch->padH  : batch->pad0H;
+        u32  mask_cms   = batch->mask_tex1 ? batch->cms   : batch->cms0;
+        u32  mask_cmt   = batch->mask_tex1 ? batch->cmt   : batch->cmt0;
+        int  detail_padW = batch->mask_tex1 ? batch->pad0W : batch->padW;
+        int  detail_padH = batch->mask_tex1 ? batch->pad0H : batch->padH;
+        u32  detail_cms  = batch->mask_tex1 ? batch->cms0  : batch->cms;
+        u32  detail_cmt  = batch->mask_tex1 ? batch->cmt0  : batch->cmt;
 
         /* --- Pass A: Alpha clear — DESTCOLOR/ZERO with white+alpha=0 --- */
         {
@@ -1967,19 +1981,19 @@ static void flush_multitex_pass2(void) {
         }
 
         /* --- Pass B: Mask (tile 0) — SRCALPHA/INVSRCALPHA --- */
-        if (batch->tex0) {
-            u32 fmt0 = pvr_tex_fmt_for(batch->tex0->fmt, batch->tex0->siz);
+        if (mask_tex) {
+            u32 fmt0 = pvr_tex_fmt_for(mask_tex->fmt, mask_tex->siz);
             pvr_poly_cxt_t cxt;
             pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY,
                               fmt0,// | PVR_TXRFMT_NONTWIDDLED,
-                              batch->pad0W, batch->pad0H,
-                              batch->tex0->id, pvr_tex_filter());
+                              mask_padW, mask_padH,
+                              mask_tex->id, pvr_tex_filter());
             cxt.txr.env = PVR_TXRENV_MODULATEALPHA;
             { int uvc = 0, uvf = 0;
-              if (batch->cms0 & 2) uvc |= PVR_UVCLAMP_U;
-              if (batch->cmt0 & 2) uvc |= PVR_UVCLAMP_V;
-              if (batch->cms0 & 1) uvf |= PVR_UVFLIP_U;
-              if (batch->cmt0 & 1) uvf |= PVR_UVFLIP_V;
+              if (mask_cms & 2) uvc |= PVR_UVCLAMP_U;
+              if (mask_cmt & 2) uvc |= PVR_UVCLAMP_V;
+              if (mask_cms & 1) uvf |= PVR_UVFLIP_U;
+              if (mask_cmt & 1) uvf |= PVR_UVFLIP_V;
               cxt.txr.uv_clamp = uvc; cxt.txr.uv_flip = uvf; }
             cxt.gen.culling = PVR_CULLING_NONE;
             cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
@@ -1999,7 +2013,8 @@ static void flush_multitex_pass2(void) {
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
                     vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
-                    vert->u = mv->u0; vert->v = mv->v0;
+                    vert->u = batch->mask_tex1 ? mv->u : mv->u0;
+                    vert->v = batch->mask_tex1 ? mv->v : mv->v0;
                     vert->argb = mv->argb;
                     vert->oargb = mv->oargb;
                     pvr_dr_commit(vert);
@@ -2007,20 +2022,20 @@ static void flush_multitex_pass2(void) {
             }
         }
 
-        /* --- Pass C: Fire (tile 1) — DESTALPHA/ONE (masked by FB alpha) --- */
-        {
-            u32 bfmt = pvr_tex_fmt_for(batch->texID->fmt, batch->texID->siz);
+        /* --- Pass C: detail — DESTALPHA/ONE (masked by FB alpha) --- */
+        if (detail_tex) {
+            u32 bfmt = pvr_tex_fmt_for(detail_tex->fmt, detail_tex->siz);
             pvr_poly_cxt_t cxt;
             pvr_poly_cxt_txr(&cxt, PVR_LIST_TR_POLY,
                               bfmt,// | PVR_TXRFMT_NONTWIDDLED,
-                              batch->padW, batch->padH,
-                              batch->texID->id, pvr_tex_filter());
+                              detail_padW, detail_padH,
+                              detail_tex->id, pvr_tex_filter());
             cxt.txr.env = PVR_TXRENV_MODULATE;//ALPHA;
             { int uvc = 0, uvf = 0;
-              if (batch->cms & 2) uvc |= PVR_UVCLAMP_U;
-              if (batch->cmt & 2) uvc |= PVR_UVCLAMP_V;
-              if (batch->cms & 1) uvf |= PVR_UVFLIP_U;
-              if (batch->cmt & 1) uvf |= PVR_UVFLIP_V;
+              if (detail_cms & 2) uvc |= PVR_UVCLAMP_U;
+              if (detail_cmt & 2) uvc |= PVR_UVCLAMP_V;
+              if (detail_cms & 1) uvf |= PVR_UVFLIP_U;
+              if (detail_cmt & 1) uvf |= PVR_UVFLIP_V;
               cxt.txr.uv_clamp = uvc; cxt.txr.uv_flip = uvf; }
             cxt.gen.culling = PVR_CULLING_NONE;
             cxt.gen.clip_mode = PVR_USERCLIP_INSIDE;
@@ -2041,7 +2056,8 @@ static void flush_multitex_pass2(void) {
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
                     vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
                     if (mv->z > max_z) max_z = mv->z;
-                    vert->u = mv->u; vert->v = mv->v;
+                    vert->u = batch->mask_tex1 ? mv->u0 : mv->u;
+                    vert->v = batch->mask_tex1 ? mv->v0 : mv->v;
                     vert->argb = mv->argb;
                     vert->oargb = mv->oargb;
                     pvr_dr_commit(vert);
@@ -2054,6 +2070,25 @@ static void flush_multitex_pass2(void) {
     sMultiTexBatchCount = 0;
 }
 
+
+/* Which texel carries the SILHOUETTE in a masked two-texture effect.
+   These DLs build alpha as  (detail - 1) * lodfrac + silhouette , so the alpha
+   combiner's cycle-0 `d` term is the silhouette and the multiplied term is the
+   detail noise. The two are freely swapped between objects: gEffFire1DL (Poe
+   souls, torches) puts the silhouette in TEXEL0, gGiSkulltulaTokenFlameDL (gold
+   skulltula token) uses the very same combiner with TEXEL0/TEXEL1 exchanged.
+   Treating tile 0 as the silhouette unconditionally made the token's noise
+   texture the mask -- it covers its whole 32x32 tile, so the stencil admitted
+   the entire quad and the flame rendered as a solid block (HW 2026-09-09). */
+static inline int mtx_mask_is_tex1(void) {
+    return sCombinerState.ad0 == 2;   /* alpha cycle-0 `d` mux: 1 = TEXEL0, 2 = TEXEL1 */
+}
+
+static inline int mtx_needs_stencil(void) {
+    TextureCacheEntry* t0 = sTiles[0].texture;
+    return (sCombinerState.alpha_uses_texture && sBlendingEnabled) ||
+           (t0 && pc_resolve_addr(t0->addr) == pc_resolve_addr(gDecorativeFlameMaskTex));
+}
 
 /* Start or continue a multi-tex batch for the given tile 1 texture */
 static void mtx_ensure_batch(void) {
@@ -2068,6 +2103,7 @@ static void mtx_ensure_batch(void) {
     if (sMultiTexBatchCount > 0) {
         MtxBatch* cur = &sMultiTexBatches[sMultiTexBatchCount - 1];
         if (cur->texID->id == entry->id && cur->cms == cms && cur->cmt == cmt &&
+            cur->mask_tex1 == mtx_mask_is_tex1() &&
             cur->sx1 == sPvrScisX1 && cur->sy1 == sPvrScisY1 && cur->sx2 == sPvrScisX2 && cur->sy2 == sPvrScisY2)
             return;  /* current batch still matches */
         cur->count = sMultiTexVertCount - cur->start;
@@ -2093,9 +2129,8 @@ static void mtx_ensure_batch(void) {
        Freezard steam, etc.), keyed on the specific tile-0 texture. Everything else
        — Morpha's water, ground detail, skybox — must use the simple lerp, or the
        additive Pass C blows them out. */
-    b->needs_stencil =  (sCombinerState.alpha_uses_texture && sBlendingEnabled) ||
-                        (b->tex0 &&
-                        pc_resolve_addr(b->tex0->addr) == pc_resolve_addr(gDecorativeFlameMaskTex));
+    b->needs_stencil = mtx_needs_stencil();
+    b->mask_tex1 = mtx_mask_is_tex1();
 }
 
 /* One-way switch from OP to TR list mid-scene (for blended/alpha-tested geometry) */
@@ -3772,6 +3807,14 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
                 pvr_z /= 1000.0f;
             }
             mt_blend_a_inv = 255 - (u8)(blend_f * 255.0f);
+            /* The base pass samples tile 0 only. When the silhouette is in tile 1
+               (see mtx_mask_is_tex1) tile 0 is the detail noise, which covers its
+               whole tile, so this pass would paint a solid block -- the gold
+               skulltula token's flame did exactly that. Pass B of the stencil
+               chain draws the silhouette with this same color, so hand the shape
+               to it and let the base pass contribute nothing. */
+            if (mtx_mask_is_tex1() && mtx_needs_stencil())
+                mt_blend_a_inv = 0;
             packed_color = (packed_color & 0x00ffffff) | (mt_blend_a_inv << 24);
         }
 
