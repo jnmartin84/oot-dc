@@ -142,6 +142,7 @@ static int sLastTlutOffset = -1, sLastTlutCount = -1, sLastTlutType = -1;
    multitex draws (env ~= 0,100,255). Throttled. Set to 0 to silence. */
 #define MORPHA_PROBE 1
 
+
 /* DIAGNOSTIC: amplify the Morpha tentacle's env-map texgen UV variation to tighten
    its smeared caustic highlights. 1.0 = current (smeared). Tune up = tighter. */
 #define MORPHA_TEXGEN_MUL 2.0f
@@ -1874,7 +1875,15 @@ mode2 |= ((sPvrCurrentList > PVR_LIST_OP_MOD) << PVR_TA_PM2_ALPHA_SHIFT);
    Pass B (mask):        Tile 0 with SRCALPHA/INVSRCALPHA — renders mask shape,
            establishes FB alpha from tile 0's alpha.
    Pass C (fire):        Tile 1 with DESTALPHA/ONE — fire added only where
-           FB alpha is non-zero (inside the mask shape). */
+           FB alpha is non-zero (inside the mask shape).
+   The chain is order-dependent and lives on the autosorting TR list, where
+   equal-z order is undefined (far-pin rule; the 2D texrect chain staggers for
+   the same reason). Each pass is nudged a hair nearer than the last so the
+   hardware must run base, A, B, C. Without it, pass C sometimes landed before
+   the clear and multiplied the detail by whatever FB alpha the water beneath
+   had left: the fishing pond splash fan showed as bright noise triangles over
+   its whole extent, intermittently (HW 2026-09-11, pre-existing). */
+#define MTX_STENCIL_PASS_Z(z, k) ((z) * (1.0f + (float)(k) * (1.0f / 1024.0f)))
 static void flush_multitex_pass2(void) {
     if (sMultiTexVertCount == 0) return;
     int cx1 = -1, cy1 = -1, cx2 = -1, cy2 = -1;   /* user clip currently submitted on this list */
@@ -1971,7 +1980,7 @@ static void flush_multitex_pass2(void) {
                     MtxVert* mv = &sMultiTexVerts[i + j];
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
+                    vert->x = mv->x; vert->y = mv->y; vert->z = MTX_STENCIL_PASS_Z(mv->z, 1);
                     vert->u = 0; vert->v = 0;
                     vert->argb = 0x00FFFFFF; /* white color, zero alpha */
                     vert->oargb = 0;
@@ -2012,7 +2021,7 @@ static void flush_multitex_pass2(void) {
                     MtxVert* mv = &sMultiTexVerts[i + j];
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
+                    vert->x = mv->x; vert->y = mv->y; vert->z = MTX_STENCIL_PASS_Z(mv->z, 2);
                     vert->u = batch->mask_tex1 ? mv->u : mv->u0;
                     vert->v = batch->mask_tex1 ? mv->v : mv->v0;
                     vert->argb = mv->argb;
@@ -2054,7 +2063,7 @@ static void flush_multitex_pass2(void) {
                     MtxVert* mv = &sMultiTexVerts[i + j];
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
+                    vert->x = mv->x; vert->y = mv->y; vert->z = MTX_STENCIL_PASS_Z(mv->z, 3);
                     if (mv->z > max_z) max_z = mv->z;
                     vert->u = batch->mask_tex1 ? mv->u0 : mv->u;
                     vert->v = batch->mask_tex1 ? mv->v0 : mv->v;
@@ -2084,9 +2093,19 @@ static inline int mtx_mask_is_tex1(void) {
     return sCombinerState.ad0 == 2;   /* alpha cycle-0 `d` mux: 1 = TEXEL0, 2 = TEXEL1 */
 }
 
+/* The stencil chain (alpha clear, silhouette, ADDITIVE detail) is right for one
+   alpha form only:  alpha = (detail - 1) * f + silhouette  -- the subtractive slot
+   holds the literal 1 (G_ACMUX_1 = 6). That is every flame/aura/magic draw in the
+   game (83 DLs). The other ~120 blended two-texture draws are plain lerps,
+   alpha = (T1 - T0) * f + T0: room water, waterfall foam, ice, warp portals,
+   Morpha's membrane. Routing those through the chain was the pre-existing look
+   the June comment warned about: the additive pass blew the Gerudo Valley foam
+   into an opaque white slab (HW 2026-09-11). They take the simple lerp instead.
+   Blending must be on either way (the chain composes through FB alpha). */
 static inline int mtx_needs_stencil(void) {
     TextureCacheEntry* t0 = sTiles[0].texture;
-    return (sCombinerState.alpha_uses_texture && sBlendingEnabled) ||
+    int flame_form = sCombinerState.alpha_uses_texture && sCombinerState.ab0 == 6;
+    return (flame_form && sBlendingEnabled) ||
            (t0 && pc_resolve_addr(t0->addr) == pc_resolve_addr(gDecorativeFlameMaskTex));
 }
 
@@ -3790,8 +3809,14 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
         if (sPolygonOffsetBias > 0.0f)
             pvr_z += pvr_z * sPolygonOffsetBias;
         u8 do_mtex = 0;
-        u8 dbg_comb_a = (u8)((packed_color >> 24) & 0xFF);   /* true combiner alpha, pre-override */
-        (void)dbg_comb_a;
+        /* The combiner alpha with both texels substituted by 1: whatever is left is
+           the NON-texture factor -- vertex (shade) alpha, prim alpha, env alpha --
+           and on the N64 it multiplies the texel lerp. The two-texture path below
+           replaces the alpha with the blend weight, so that factor was dropped:
+           the Gerudo Valley waterfall spray (alpha = lerp(T0,T1,env) * SHADE, with
+           the fan's top vertices at alpha 0) drew as a hard-edged sheet instead of
+           fading out (HW probe 2026-09-11). Scaled back in below, both passes. */
+        u32 comb_a = (packed_color >> 24) & 0xFF;
         /* Buffer pass 2 vertex for multi-texture blend (tile 1) */
         if (sMultiTexEnabled && (sDrawingSkybox || sDepthWriteEnabled || (sCombinerState.alpha_uses_texture && sBlendingEnabled)) &&
             (sTiles[1].texDirty ? (resolve_tile_texture(1), 1) : 1) &&
@@ -3806,6 +3831,8 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
                 pvr_z /= 1000.0f;
             }
             mt_blend_a_inv = 255 - (u8)(blend_f * 255.0f);
+            if (!sDrawingSkybox)
+                mt_blend_a_inv = (u8)((mt_blend_a_inv * comb_a + 127u) / 255u);
             /* The base pass samples tile 0 only. When the silhouette is in tile 1
                (see mtx_mask_is_tex1) tile 0 is the detail noise, which covers its
                whole tile, so this pass would paint a solid block -- the gold
@@ -3909,7 +3936,10 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
             mv->v = mt_v * mt_inv_t1H;
             mv->u0 = u * inv_texW;   /* tile 0 UVs for mask passes */
             mv->v0 = v * inv_texH;
-            mv->argb = (mt_blend_a << 24) | (packed_color & 0x00FFFFFF);
+            {
+                u32 a2 = sDrawingSkybox ? mt_blend_a : (mt_blend_a * comb_a + 127u) / 255u;
+                mv->argb = (a2 << 24) | (packed_color & 0x00FFFFFF);
+            }
             mv->oargb = fog_oargb;
         }
     }
