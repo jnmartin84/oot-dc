@@ -1876,14 +1876,12 @@ mode2 |= ((sPvrCurrentList > PVR_LIST_OP_MOD) << PVR_TA_PM2_ALPHA_SHIFT);
            establishes FB alpha from tile 0's alpha.
    Pass C (fire):        Tile 1 with DESTALPHA/ONE — fire added only where
            FB alpha is non-zero (inside the mask shape).
-   The chain is order-dependent and lives on the autosorting TR list, where
-   equal-z order is undefined (far-pin rule; the 2D texrect chain staggers for
-   the same reason). Each pass is nudged a hair nearer than the last so the
-   hardware must run base, A, B, C. Without it, pass C sometimes landed before
-   the clear and multiplied the detail by whatever FB alpha the water beneath
-   had left: the fishing pond splash fan showed as bright noise triangles over
-   its whole extent, intermittently (HW 2026-09-11, pre-existing). */
-#define MTX_STENCIL_PASS_Z(z, k) ((z) * (1.0f + (float)(k) * (1.0f / 1024.0f)))
+   All three passes sit at the SAME z as the base draw, deliberately. The hardware
+   keeps submission order for equal-z translucent polys (Poe souls have relied on
+   that since June). Staggering them nearer was tried 2026-09-11 and reverted: a
+   billboard cut by the translucent water plane then had a band of pixels where
+   the water sorted BETWEEN the passes, so the additive detail pass painted noise
+   onto the water surface along the intersection (fishing pond dust clouds). */
 static void flush_multitex_pass2(void) {
     if (sMultiTexVertCount == 0) return;
     int cx1 = -1, cy1 = -1, cx2 = -1, cy2 = -1;   /* user clip currently submitted on this list */
@@ -1980,7 +1978,7 @@ static void flush_multitex_pass2(void) {
                     MtxVert* mv = &sMultiTexVerts[i + j];
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = mv->x; vert->y = mv->y; vert->z = MTX_STENCIL_PASS_Z(mv->z, 1);
+                    vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
                     vert->u = 0; vert->v = 0;
                     vert->argb = 0x00FFFFFF; /* white color, zero alpha */
                     vert->oargb = 0;
@@ -2021,7 +2019,7 @@ static void flush_multitex_pass2(void) {
                     MtxVert* mv = &sMultiTexVerts[i + j];
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = mv->x; vert->y = mv->y; vert->z = MTX_STENCIL_PASS_Z(mv->z, 2);
+                    vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
                     vert->u = batch->mask_tex1 ? mv->u : mv->u0;
                     vert->v = batch->mask_tex1 ? mv->v : mv->v0;
                     vert->argb = mv->argb;
@@ -2063,7 +2061,7 @@ static void flush_multitex_pass2(void) {
                     MtxVert* mv = &sMultiTexVerts[i + j];
                     pvr_vertex_t *vert = (pvr_vertex_t *)pvr_dr_target(sDrState);
                     vert->flags = (j == 2) ? PVR_CMD_VERTEX_EOL : PVR_CMD_VERTEX;
-                    vert->x = mv->x; vert->y = mv->y; vert->z = MTX_STENCIL_PASS_Z(mv->z, 3);
+                    vert->x = mv->x; vert->y = mv->y; vert->z = mv->z;
                     if (mv->z > max_z) max_z = mv->z;
                     vert->u = batch->mask_tex1 ? mv->u0 : mv->u;
                     vert->v = batch->mask_tex1 ? mv->v0 : mv->v;
@@ -3922,7 +3920,17 @@ static void emit_triangle_fast(LoadedVertex* v0, LoadedVertex* v1, LoadedVertex*
                 float blend_f = (sPrimLodFrac > 0.001f) ? sPrimLodFrac : sEnvColor[3];
                 if (sDrawingSkybox)
                     blend_f = sPrimColor[3];
-                mt_blend_a = (u8)(blend_f * 255.0f);
+                /* Lerp form: this is pass 2's weight f (base carries 1-f).
+                   Flame form (stencil chain): it is the SILHOUETTE pass's alpha.
+                   The N64 alpha is  sil - f * (1 - detail) , i.e. the silhouette
+                   at weight 1 less a noise-dependent bite of up to f; its mean
+                   over the noise is sil * (1 - f/2). Weighting the silhouette by
+                   f itself (as before) drew every flame-form effect at half the
+                   strength the math gives for f = 1/2 -- the fishing pond's
+                   stream-inlet foam ring, prim alpha 50, all but vanished
+                   (HW probe 2026-09-11: geometry and alpha exactly as computed). */
+                float w = mtx_needs_stencil() ? (1.0f - 0.5f * blend_f) : blend_f;
+                mt_blend_a = (u8)(w * 255.0f);
             }
 
             float mt_u = (src->u - mt_uls1) * mt_u1_shift;
