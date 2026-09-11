@@ -3443,11 +3443,18 @@ static void handle_vtx(u32 w0, u32 w1) {
                 if (sGeometryMode & G_TEXTURE_GEN_LINEAR) {
                     /* Linear-in-angle mapping, monotonic over the whole normal
                        range and oriented like the plain path (dot = -1 -> 0,
-                       dot = 0 -> 0.5, dot = +1 -> 1); same form as the MK64 port.
+                       dot = 0 -> 0.5, dot = +1 -> 1).
                        The previous |dot| cubic folded the mapping at dot = 0, so
                        every surface whose normal swept past perpendicular-to-
                        lookat showed a crease that travelled across it as the
-                       model turned (Triforce side faces, HW 2026-09-09). */
+                       model turned (Triforce side faces, HW 2026-09-09).
+                       Range is deliberately [0,1] x the full gsSPTexture scale,
+                       NOT the [0,0.5] the MK64/SM64 ports use: the old cubic
+                       spanned [0,0.5] but traversed it TWICE per sweep, so [0,1]
+                       once is what keeps this renderer's long-standing amount of
+                       pattern movement per unit of rotation. Halving it to match
+                       those ports washed out every env map in the game (rupees,
+                       HW 2026-09-09) for no gain. */
                     if (dotX >  1.0f) dotX =  1.0f; else if (dotX < -1.0f) dotX = -1.0f;
                     if (dotY >  1.0f) dotY =  1.0f; else if (dotY < -1.0f) dotY = -1.0f;
                     dotX = acosf(-dotX) * (1.0f / 3.14159265f);
@@ -3456,16 +3463,8 @@ static void handle_vtx(u32 w0, u32 w1) {
                     dotX = dotX * 0.5f + 0.5f;
                     dotY = dotY * 0.5f + 0.5f;
                 }
-                /* The RSP maps the full [-1,1] normal range onto HALF the gsSPTexture
-                   scale (1024 S10.5 units x scale, = scale_raw/64 texels), the same
-                   mapping the MK64/SM64 ports and GLideN64 use. At the full scale the
-                   Triforce's finest tile (shift x4) ran to 125 texels over a 64-wide
-                   texture and wrapped once across the model: a hard seam that
-                   "scrolls" as it rotates (HW 2026-09-09). At half scale its 62.5
-                   maximum fits the texture, which is clearly what its author sized
-                   the scale for. */
-                d->u = dotX * rsp.texture_scale_s * (0.5f * tg_mul);
-                d->v = dotY * rsp.texture_scale_t * (0.5f * tg_mul);
+                d->u = dotX * rsp.texture_scale_s * tg_mul;
+                d->v = dotY * rsp.texture_scale_t * tg_mul;
             }
         }
     }
