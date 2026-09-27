@@ -20,6 +20,7 @@
 #include "regs.h"
 #include "rumble.h"
 #include "speed_meter.h"
+#include "ss_sram.h"
 #include "sys_debug_controller.h"
 #include "terminal.h"
 #include "translation.h"
@@ -218,6 +219,10 @@ void GameState_Draw(GameState* gameState, GraphicsContext* gfxCtx) {
     if (R_ENABLE_FB_FILTER == 1) {
         GameState_SetFBFilter(&newDList);
     }
+
+#ifdef __DREAMCAST__
+    DcSram_DrawStatus(&newDList);
+#endif
 
 #if DEBUG_FEATURES
     sLastButtonPressed = gameState->input[0].press.button | gameState->input[0].cur.button;

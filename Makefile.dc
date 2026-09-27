@@ -401,7 +401,8 @@ OBJECTS := \
     $(BUILD_DIR)/src/libultra/reg/_setcompare.o \
     $(BUILD_DIR)/src/linux/reimpl.o \
     $(BUILD_DIR)/src/dreamcast/dc_audio.o \
-    $(BUILD_DIR)/src/dreamcast/main.o
+    $(BUILD_DIR)/src/dreamcast/main.o \
+    $(BUILD_DIR)/src/dreamcast/sram_pack.o
 
 ALL_OBJECTS := $(OBJECTS) $(OVERLAY_OBJECTS)
 
@@ -538,12 +539,24 @@ $(CDI_ODE): $(TARGET) assets_dc/adpcm_pool.bin $(ICON)
 clean-disc:
 	rm -f $(CDI) $(CDI_ODE)
 
+# Host test for the VMU save codec (src/dreamcast/sram_pack.c), built with the
+# system compiler. Like every target here it needs environ.sh sourced.
+HOST_CC ?= cc
+SRAM_TEST := $(BUILD_DIR)/tools/sram_pack_test
+
+test-sram: $(SRAM_TEST)
+	$(SRAM_TEST)
+
+$(SRAM_TEST): tools/sram_pack_test.c src/dreamcast/sram_pack.c src/dreamcast/sram_pack.h
+	@mkdir -p $(dir $@)
+	$(HOST_CC) -std=c99 -O2 -g -Wall -Wextra -fsanitize=address,undefined -Isrc/dreamcast -o $@ tools/sram_pack_test.c src/dreamcast/sram_pack.c
+
 clean:
-	rm -rf $(BUILD_DIR)/src $(TARGET) 
+	rm -rf $(BUILD_DIR)/src $(BUILD_DIR)/tools $(TARGET)
 
 clean-assets:
 	rm -rf $(ASSET_DIR) assets_dc
 
 clean-all: clean clean-assets clean-disc
 
-.PHONY: all clean clean-assets clean-disc clean-all assets check-assets extract cdi cdi-ode
+.PHONY: all clean clean-assets clean-disc clean-all assets check-assets extract cdi cdi-ode test-sram
